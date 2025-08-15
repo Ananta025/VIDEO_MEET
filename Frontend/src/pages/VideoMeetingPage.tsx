@@ -19,6 +19,8 @@ import ThreeDotsIcon from "@mui/icons-material/MoreVert";
 import RecordingControls from "../components/RecordingControls";
 import { useNavigate, useParams } from 'react-router-dom';
 import io from 'socket.io-client';
+import { Socket } from "socket.io-client";
+import FlipCameraAndroidIcon from '@mui/icons-material/FlipCameraAndroid';
 import axios from 'axios';
 
 // Define types for your WebRTC connections
@@ -90,6 +92,8 @@ export default function VideoMeetingPage() {
   const [localStreamReady, setLocalStreamReady] = useState<boolean>(false);
   const pendingConnectionsRef = useRef<string[]>([]);
   const connectionsRef = useRef<ConnectionsType>(connectionsStore);
+
+  const [isMirrored, setIsMirrored] = useState(true);
   
   // Add ref to track if video state was updated
   const videoUpdateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -142,60 +146,60 @@ export default function VideoMeetingPage() {
 
   // Update the getPermissions function to properly handle stream readiness
   const getPermissions = async () => {
-    try {
-      console.log("Getting media permissions...");
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: true,
-      });
+  try {
+    console.log("Getting media permissions...");
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: true,
+    });
 
-      setVideoAvailable(true);
-      setAudioAvailable(true);
-      setScreenAvailable(!!navigator.mediaDevices.getDisplayMedia);
-      
-      setVideo(true);
-      setAudio(true);
+    setVideoAvailable(true);
+    setAudioAvailable(true);
+    setScreenAvailable(!!navigator.mediaDevices.getDisplayMedia);
+    
+    setVideo(true);
+    setAudio(true);
 
-      window.localStream = stream;
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-      }
-      
-      // Set both state and ref for stream readiness
-      setLocalStreamReady(true);
-      streamReadyRef.current = true;
-      console.log("Local stream initialized successfully");
-      
-      // Process any pending connections that came in before stream was ready
-      if (pendingConnectionsRef.current.length > 0 && socketRef.current) {
-        console.log("Processing pending connections:", pendingConnectionsRef.current);
-        const pendingConnections = [...pendingConnectionsRef.current];
-        pendingConnectionsRef.current = [];
-        
-        // Process the pending connections with a small delay to ensure all states are updated
-        setTimeout(() => {
-          pendingConnections.forEach(clientId => {
-            createConnectionForClient(clientId, true);
-          });
-        }, 500);
-      }
-    } catch (err) {
-      console.error("Error getting media permissions:", err);
-      if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
-        setVideoAvailable(false);
-        setAudioAvailable(false);
-      }
-      
-      // Even with no devices, we should create a black/silent stream
-      console.log("Creating fallback black/silent stream");
-      const BlackSilence = (...args: Array<{width?: number, height?: number}>) => new MediaStream([silence(), black(...args[0])]);
-      window.localStream = BlackSilence();
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = window.localStream;
-      }
-      setLocalStreamReady(true);
+    window.localStream = stream;
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = stream;
     }
-  });
+    
+    // Set both state and ref for stream readiness
+    setLocalStreamReady(true);
+    streamReadyRef.current = true;
+    console.log("Local stream initialized successfully");
+    
+    // Process any pending connections that came in before stream was ready
+    if (pendingConnectionsRef.current.length > 0 && socketRef.current) {
+      console.log("Processing pending connections:", pendingConnectionsRef.current);
+      const pendingConnections = [...pendingConnectionsRef.current];
+      pendingConnectionsRef.current = [];
+      // Process the pending connections with a small delay to ensure all states are updated
+      setTimeout(() => {
+        pendingConnections.forEach(clientId => {
+          createConnectionForClient(clientId, true);
+        });
+      }, 500);
+    }
+  } catch (err) {
+    console.error("Error getting media permissions:", err);
+    if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+      setVideoAvailable(false);
+      setAudioAvailable(false);
+    }
+    
+    // Even with no devices, we should create a black/silent stream
+    console.log("Creating fallback black/silent stream");
+    const BlackSilence = (...args: Array<{width?: number, height?: number}>) =>
+      new MediaStream([silence(), black(...args[0])]);
+    window.localStream = BlackSilence();
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = window.localStream;
+    }
+    setLocalStreamReady(true);
+  }
+}; 
 
   // Create a helper function to set up a connection with proper error handling
   const createConnectionForClient = (clientId: string, createOffer = false) => {
@@ -1343,7 +1347,7 @@ export default function VideoMeetingPage() {
         <div className='video-meeting-page-container'>
             <div className="main-video-container">
               <div 
-                className="local-video-container"
+                className="local-video-container relative"
                 ref={localVideoContainerRef}
               >
                 <video
@@ -1351,8 +1355,18 @@ export default function VideoMeetingPage() {
                   autoPlay
                   playsInline
                   muted
-                  className={`local-video ${isScreenSharing ? 'screen-share' : ''}`}
+                  className={`local-video ${isScreenSharing ? 'screen-share' : ''} ${isMirrored ? 'scale-x-[-1]' : ''}`}
                 ></video>
+
+                {/* Flip Camera button - bottom-left overlay */}
+                <button
+                  onClick={() => setIsMirrored(!isMirrored)}
+                  className="absolute bottom-2 left-2 bg-gray-800 bg-opacity-50 text-white px-2.5 py-2 rounded-full 
+                  hover:bg-opacity-70 transition border border-white/30 shadow-lg"
+                  title={isMirrored ? "Unflip Camera" : "Flip Camera"}
+                >
+                  <FlipCameraAndroidIcon fontSize="small" className="mb-1"/>
+                </button>
               </div>
               <div 
                 className="remote-video-container"
