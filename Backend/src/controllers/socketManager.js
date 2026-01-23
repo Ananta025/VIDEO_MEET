@@ -1,9 +1,52 @@
 import { Server } from 'socket.io';
+import meetingModel from '../models/meetingModel.js';
 
 const connections = {};
 const timeOnline = {};
 const messages = {};
 const pendingJoins = {}; // Track pending join operations
+
+/**
+ * Helper to extract meetingId from room path
+ * Path format: /meeting/meeting-abc123 or just meeting-abc123
+ */
+const extractMeetingIdFromPath = (path) => {
+    if (!path) return null;
+    // Handle both /meeting/meeting-xxx and meeting-xxx formats
+    const match = path.match(/meeting-[a-zA-Z0-9]+$/);
+    return match ? match[0] : null;
+};
+
+/**
+ * Update meeting status in database when room becomes empty
+ * This ensures history shows accurate duration even when browser closes
+ */
+const markMeetingAsCompleted = async (roomPath) => {
+    const meetingId = extractMeetingIdFromPath(roomPath);
+    if (!meetingId) {
+        console.log("[SocketManager] Could not extract meetingId from path:", roomPath);
+        return;
+    }
+    
+    try {
+        const meeting = await meetingModel.findOne({ meetingId, status: 'ongoing' });
+        if (meeting) {
+            const now = new Date();
+            const startTime = meeting.actualStartTime || meeting.startTime;
+            const duration = now.getTime() - new Date(startTime).getTime();
+            
+            meeting.status = 'completed';
+            meeting.actualEndTime = now;
+            meeting.endTime = now;
+            meeting.duration = duration;
+            await meeting.save();
+            
+            console.log(`[SocketManager] Meeting ${meetingId} auto-completed after ${Math.round(duration / 60000)} minutes`);
+        }
+    } catch (err) {
+        console.error("[SocketManager] Error auto-completing meeting:", err.message);
+    }
+};
 
 const connectToSocket = (server) => {
     // Get allowed origins from environment or use defaults
@@ -154,6 +197,10 @@ const connectToSocket = (server) => {
                 // Clean up empty rooms
                 if (connections[roomKey].length === 0) {
                     console.log("Room is now empty, removing:", roomKey);
+                    
+                    // Auto-complete the meeting in database
+                    markMeetingAsCompleted(roomKey);
+                    
                     delete connections[roomKey];
                     delete messages[roomKey];
                 }
@@ -176,6 +223,9 @@ const connectToSocket = (server) => {
                     
                     // Clean up empty rooms
                     if (connections[joinData.path].length === 0) {
+                        // Auto-complete the meeting in database
+                        markMeetingAsCompleted(joinData.path);
+                        
                         delete connections[joinData.path];
                         delete messages[joinData.path];
                     }

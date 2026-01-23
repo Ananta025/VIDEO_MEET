@@ -127,9 +127,21 @@ const HistoryPage = () => {
     });
   };
 
-  const formatDuration = (startTime: string, endTime: string) => {
-    const start = new Date(startTime);
-    const end = new Date(endTime);
+  const formatDuration = (meeting: Meeting) => {
+    // Use server-calculated duration if available
+    if (meeting.duration && meeting.duration > 0) {
+      const minutes = Math.floor(meeting.duration / (1000 * 60));
+      const hours = Math.floor(minutes / 60);
+      
+      if (hours > 0) {
+        return `${hours}h ${minutes % 60}m`;
+      }
+      return `${minutes}m`;
+    }
+    
+    // Fallback to calculating from times
+    const start = new Date(meeting.startTime);
+    const end = new Date(meeting.endTime);
     const durationMs = end.getTime() - start.getTime();
     const minutes = Math.floor(durationMs / (1000 * 60));
     const hours = Math.floor(minutes / 60);
@@ -285,7 +297,7 @@ const HistoryPage = () => {
           <>
             <Grid container spacing={3}>
               {meetings.map((meeting) => (
-                <Grid item xs={12} key={meeting._id}>
+                <Grid item xs={12} key={meeting.meetingId || meeting._id}>
                   <Card>
                     <CardContent>
                       <Box display="flex" justifyContent="space-between" alignItems="flex-start" mb={2}>
@@ -317,7 +329,7 @@ const HistoryPage = () => {
                           <Box display="flex" alignItems="center" gap={0.5}>
                             <TimeIcon fontSize="small" color="action" />
                             <Typography variant="body2">
-                              Duration: {formatDuration(meeting.startTime, meeting.endTime)}
+                              Duration: {formatDuration(meeting)}
                             </Typography>
                           </Box>
                         )}
@@ -362,7 +374,7 @@ const HistoryPage = () => {
                       {meeting.recording?.isRecorded && (
                         <Tooltip title="Download Recording">
                           <IconButton
-                            onClick={() => handleDownloadRecording(meeting._id)}
+                            onClick={() => handleDownloadRecording(meeting.meetingId)}
                             color="primary"
                           >
                             <DownloadIcon />
@@ -384,7 +396,7 @@ const HistoryPage = () => {
                           <Tooltip title="Download Transcript (TXT)">
                             <Button
                               size="small"
-                              onClick={() => handleDownloadTranscript(meeting._id, 'txt')}
+                              onClick={() => handleDownloadTranscript(meeting.meetingId, 'txt')}
                             >
                               TXT
                             </Button>
@@ -394,7 +406,7 @@ const HistoryPage = () => {
                             <Tooltip title="Download Subtitles (VTT)">
                               <Button
                                 size="small"
-                                onClick={() => handleDownloadTranscript(meeting._id, 'vtt')}
+                                onClick={() => handleDownloadTranscript(meeting.meetingId, 'vtt')}
                                 startIcon={<SubtitlesIcon />}
                               >
                                 VTT
@@ -462,14 +474,14 @@ const HistoryPage = () => {
             {transcriptDialog.meeting && (
               <>
                 <Button
-                  onClick={() => handleDownloadTranscript(transcriptDialog.meeting!._id, 'txt')}
+                  onClick={() => handleDownloadTranscript(transcriptDialog.meeting!.meetingId, 'txt')}
                   variant="outlined"
                 >
                   Download TXT
                 </Button>
                 {transcriptDialog.meeting.transcript?.vttUrl && (
                   <Button
-                    onClick={() => handleDownloadTranscript(transcriptDialog.meeting!._id, 'vtt')}
+                    onClick={() => handleDownloadTranscript(transcriptDialog.meeting!.meetingId, 'vtt')}
                     variant="outlined"
                   >
                     Download VTT

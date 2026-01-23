@@ -51,6 +51,21 @@ const meetingSchema = new mongoose.Schema({
         enum: ['scheduled', 'ongoing', 'completed', 'cancelled'],
         default: 'scheduled'
     },
+    // Duration in milliseconds - calculated when meeting ends
+    duration: {
+        type: Number,
+        default: null
+    },
+    // Track actual start time (when first participant joins, not scheduled time)
+    actualStartTime: {
+        type: Date,
+        default: null
+    },
+    // Track actual end time (when meeting is marked completed)
+    actualEndTime: {
+        type: Date,
+        default: null
+    },
     recording: {
         isRecorded: {
             type: Boolean,

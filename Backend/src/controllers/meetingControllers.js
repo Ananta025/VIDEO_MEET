@@ -188,11 +188,27 @@ const joinMeeting = async(req, res) => {
             });
         }
 
-        // Add user to participants if not already included
-        if (!meeting.participants.includes(userId)) {
-            meeting.participants.push(userId);
-            await meeting.save();
+        // Set actualStartTime when first participant joins (if not already set)
+        if (!meeting.actualStartTime && meeting.status !== 'completed') {
+            meeting.actualStartTime = new Date();
         }
+        
+        // Update status to ongoing if it was scheduled
+        if (meeting.status === 'scheduled') {
+            meeting.status = 'ongoing';
+        }
+
+        // Add user to participants if not already included (deduplicate)
+        const userIdStr = userId.toString();
+        const isAlreadyParticipant = meeting.participants.some(
+            p => p.toString() === userIdStr
+        );
+        
+        if (!isAlreadyParticipant) {
+            meeting.participants.push(userId);
+        }
+        
+        await meeting.save();
 
         return res.status(200).json({
             success: true,
@@ -265,9 +281,16 @@ const endMeeting = async(req, res) => {
             });
         }
 
-        // Update meeting status to completed
+        // Calculate duration
+        const now = new Date();
+        const startTime = meeting.actualStartTime || meeting.startTime;
+        const duration = now.getTime() - new Date(startTime).getTime();
+
+        // Update meeting status to completed with duration
         meeting.status = 'completed';
-        meeting.endTime = new Date();
+        meeting.actualEndTime = now;
+        meeting.endTime = now;
+        meeting.duration = duration;
         await meeting.save();
 
         return res.status(200).json({
@@ -585,7 +608,7 @@ const getTranscript = async(req, res) => {
 const getUserMeetings = async(req, res) => {
     try {
         const userId = req.user._id;
-        const { page = 1, limit = 10, status } = req.query;
+        const { page = 1, limit = 10, status, historyOnly = 'false' } = req.query;
 
         // Build query conditions
         const queryConditions = {
@@ -599,18 +622,47 @@ const getUserMeetings = async(req, res) => {
         if (status && ['scheduled', 'ongoing', 'completed', 'cancelled'].includes(status)) {
             queryConditions.status = status;
         }
+        
+        // If historyOnly=true, only return completed/cancelled meetings (not active ones)
+        // This ensures live meetings don't appear in history view
+        if (historyOnly === 'true') {
+            queryConditions.status = { $in: ['completed', 'cancelled'] };
+        }
 
         // Calculate pagination
         const skip = (parseInt(page) - 1) * parseInt(limit);
 
         // Get meetings with pagination
+        // Sort by startTime DESC (most recent first) instead of createdAt
         const meetings = await meetingModel
             .find(queryConditions)
             .populate('hostId', 'name email')
             .populate('participants', 'name email')
-            .sort({ createdAt: -1 })
+            .sort({ startTime: -1 })
             .skip(skip)
-            .limit(parseInt(limit));
+            .limit(parseInt(limit))
+            .lean(); // Use lean for better performance since we'll transform
+
+        // Transform meetings to include calculated duration
+        const transformedMeetings = meetings.map(meeting => {
+            let duration = meeting.duration;
+            
+            // Calculate duration if not stored but meeting has ended
+            if (!duration && meeting.status === 'completed') {
+                const start = meeting.actualStartTime || meeting.startTime;
+                const end = meeting.actualEndTime || meeting.endTime;
+                if (start && end) {
+                    duration = new Date(end).getTime() - new Date(start).getTime();
+                }
+            }
+            
+            return {
+                ...meeting,
+                duration,
+                // Include meetingId prominently for frontend use
+                id: meeting.meetingId, // Alias for convenience
+            };
+        });
 
         // Get total count for pagination
         const totalMeetings = await meetingModel.countDocuments(queryConditions);
@@ -619,7 +671,7 @@ const getUserMeetings = async(req, res) => {
             success: true,
             message: 'Meetings retrieved successfully',
             data: {
-                meetings,
+                meetings: transformedMeetings,
                 pagination: {
                     currentPage: parseInt(page),
                     totalPages: Math.ceil(totalMeetings / parseInt(limit)),

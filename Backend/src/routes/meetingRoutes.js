@@ -46,21 +46,30 @@ const upload = multer({
 // Ensure all meeting routes require authentication
 router.use(authMiddleware.authenticateUser);
 
-// Route to update meeting status
-router.put("/:meetingId", meetingControllers.updateMeetingStatus);
+// ============================================
+// CRITICAL: Static routes MUST come BEFORE parameterized routes
+// Otherwise /history would be matched as /:meetingId with meetingId="history"
+// ============================================
 
-// Route to get meeting details by ID - add this before the /:meetingId/details route
-router.get("/:meetingId", meetingControllers.getMeetingDetails);
+// User meetings history - MUST be first!
+router.get('/history', meetingControllers.getUserMeetings);
 
-// Additional meeting routes
+// Additional meeting routes (static paths)
 router.post('/create', meetingControllers.createMeeting);
 router.post('/join', meetingControllers.joinMeeting);
 router.post('/leave', meetingControllers.leaveMeeting);
 router.post('/end', meetingControllers.endMeeting);
-router.get('/:meetingId/details', meetingControllers.getMeetingDetails);
 
-// User meetings history
-router.get('/history', meetingControllers.getUserMeetings);
+// ============================================
+// Parameterized routes AFTER static routes
+// ============================================
+
+// Route to update meeting status
+router.put("/:meetingId", meetingControllers.updateMeetingStatus);
+
+// Route to get meeting details by ID
+router.get("/:meetingId", meetingControllers.getMeetingDetails);
+router.get('/:meetingId/details', meetingControllers.getMeetingDetails);
 
 // Recording and transcript routes
 router.post('/:meetingId/recording', upload.single('recording'), meetingControllers.uploadRecording);

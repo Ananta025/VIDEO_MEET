@@ -53,6 +53,7 @@ export interface MeetingTranscript {
  */
 export interface Meeting {
   _id: string;
+  meetingId: string;  // Public-facing meeting ID (e.g., "meeting-f52oxj4")
   title: string;
   description?: string;
   startTime: string;
@@ -63,6 +64,7 @@ export interface Meeting {
   recording?: MeetingRecording;
   transcript?: MeetingTranscript;
   createdAt: string;
+  duration?: number;  // Duration in milliseconds (calculated server-side)
 }
 
 /**

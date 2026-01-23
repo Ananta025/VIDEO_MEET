@@ -47,7 +47,7 @@ export default function LoginPage() {
         }
         const response = await axios.post(`${import.meta.env.VITE_BASE_URL}/users/login`, {email, password});
         console.log(response.data);
-        if(response.status === 201){
+        if(response.status === 200){
             console.log("User logged in successfully");
             // localStorage.setItem("user", JSON.stringify(response.data));
             if(response.data.token){
