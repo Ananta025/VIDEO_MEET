@@ -41,11 +41,13 @@ const arePropsEqual = (prevProps: VideoTileProps, nextProps: VideoTileProps): bo
  * Renders a single REMOTE video participant.
  * This component is ONLY for remote streams, NOT for local video.
  * 
- * Key behaviors:
- * - Receives stream from parent (stored in useRef, not state)
- * - Handles srcObject binding carefully to avoid black tiles
- * - NOT muted (remote audio should be heard)
- * - Uses stable participantId as key (never array index)
+ * DESIGN PRINCIPLES:
+ * 1. Receives stream from parent (stored in useRef, not state)
+ * 2. Handles srcObject binding carefully to avoid black tiles
+ * 3. Shows avatar placeholder when video track is missing/disabled
+ * 4. NOT muted (remote audio should be heard)
+ * 5. Uses stable participantId as key (never array index)
+ * 6. NEVER clears srcObject unnecessarily (causes flicker)
  */
 const VideoTile = memo(function VideoTile({ 
   participantId, 
@@ -55,23 +57,29 @@ const VideoTile = memo(function VideoTile({
 }: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [hasVideoTrack, setHasVideoTrack] = useState(false);
+  
+  // Track what we've attached to avoid unnecessary reattachments
   const attachedStreamIdRef = useRef<string | null>(null);
   const lastTrackCountRef = useRef<number>(0);
   
-  // Memoized play function
+  // Memoized play function with autoplay retry logic
   const tryPlay = useCallback(async (element: HTMLVideoElement) => {
-    if (element.paused && element.srcObject) {
+    if (!element.srcObject) return;
+    
+    if (element.paused) {
       try {
         await element.play();
-        console.log("VideoTile: Playback started for", participantId);
-      } catch {
-        console.warn("VideoTile: Autoplay blocked for", participantId, "- will retry on user interaction");
-        // Add a click listener to retry playback
-        const handleClick = () => {
+        console.log("[VideoTile] Playback started for", participantId);
+      } catch (err) {
+        // Autoplay was blocked - add click listener to retry
+        console.warn("[VideoTile] Autoplay blocked for", participantId, "- will retry on interaction");
+        const handleInteraction = () => {
           element.play().catch(() => {});
-          document.removeEventListener('click', handleClick);
+          document.removeEventListener('click', handleInteraction);
+          document.removeEventListener('touchstart', handleInteraction);
         };
-        document.addEventListener('click', handleClick, { once: true });
+        document.addEventListener('click', handleInteraction, { once: true });
+        document.addEventListener('touchstart', handleInteraction, { once: true });
       }
     }
   }, [participantId]);
@@ -80,104 +88,119 @@ const VideoTile = memo(function VideoTile({
   useEffect(() => {
     const videoElement = videoRef.current;
     if (!videoElement) {
-      console.warn("VideoTile: No video element ref for", participantId);
+      console.warn("[VideoTile] No video element ref for", participantId);
       return;
     }
     
-    // Handle null/undefined stream
+    // ============================================
+    // CASE 1: No stream provided
+    // ============================================
     if (!stream) {
-      console.log("VideoTile: No stream yet for", participantId);
-      if (videoElement.srcObject) {
-        videoElement.srcObject = null;
-        attachedStreamIdRef.current = null;
-      }
+      console.log("[VideoTile] No stream yet for", participantId);
+      // Don't clear srcObject if we had one - prevents flicker
+      // Parent should unmount us if stream is gone
       setHasVideoTrack(false);
       return;
     }
     
+    // ============================================
+    // CASE 2: Stream exists - analyze tracks
+    // ============================================
     const videoTracks = stream.getVideoTracks();
     const audioTracks = stream.getAudioTracks();
-    const currentTrackCount = videoTracks.length + audioTracks.length;
+    const totalTracks = videoTracks.length + audioTracks.length;
     
-    console.log("VideoTile: Processing stream for", participantId, {
+    // Check if video is actually available
+    const hasLiveVideo = videoTracks.length > 0 && 
+                          videoTracks.some(t => t.readyState === 'live');
+    
+    console.log("[VideoTile] Processing stream for", participantId, {
       streamId: stream.id,
       videoTracks: videoTracks.length,
       audioTracks: audioTracks.length,
-      videoTrackEnabled: videoTracks[0]?.enabled,
-      videoTrackState: videoTracks[0]?.readyState,
+      hasLiveVideo,
       streamUpdateCounter,
     });
     
-    // Update video track state
-    const hasVideo = videoTracks.length > 0 && videoTracks[0]?.readyState === 'live';
-    setHasVideoTrack(hasVideo);
+    setHasVideoTrack(hasLiveVideo);
     
-    // Check if we need to attach/reattach the stream
+    // ============================================
+    // CASE 3: Decide if we need to attach/reattach
+    // Only reattach if stream ID changed OR track count changed
+    // This prevents unnecessary DOM manipulation
+    // ============================================
     const streamIdChanged = attachedStreamIdRef.current !== stream.id;
-    const trackCountChanged = lastTrackCountRef.current !== currentTrackCount;
-    const needsAttach = streamIdChanged || trackCountChanged;
+    const trackCountChanged = lastTrackCountRef.current !== totalTracks;
     
-    if (needsAttach) {
-      console.log("VideoTile: Attaching stream to video element for", participantId, 
-        { streamIdChanged, trackCountChanged });
-      attachedStreamIdRef.current = stream.id;
-      lastTrackCountRef.current = currentTrackCount;
+    if (streamIdChanged || trackCountChanged) {
+      console.log("[VideoTile] Attaching stream for", participantId, 
+        { streamIdChanged, trackCountChanged, oldCount: lastTrackCountRef.current, newCount: totalTracks });
       
-      // CRITICAL: Set srcObject directly
+      // Update tracking refs
+      attachedStreamIdRef.current = stream.id;
+      lastTrackCountRef.current = totalTracks;
+      
+      // CRITICAL: Set srcObject - this is what makes video display
       videoElement.srcObject = stream;
       
       // Ensure playback starts
       tryPlay(videoElement);
     }
     
-    // Track event handlers
+    // ============================================
+    // Track event handlers for dynamic changes
+    // ============================================
     const handleTrackAdded = (event: MediaStreamTrackEvent) => {
-      console.log("VideoTile: Track added for", participantId, event.track.kind);
+      console.log("[VideoTile] Track added for", participantId, event.track.kind);
+      lastTrackCountRef.current = stream.getTracks().length;
+      
       if (event.track.kind === 'video') {
         setHasVideoTrack(true);
+        // Reattach to ensure new video track is visible
+        videoElement.srcObject = stream;
+        tryPlay(videoElement);
       }
-      // Reattach stream to ensure new track is visible
-      videoElement.srcObject = stream;
-      lastTrackCountRef.current = stream.getTracks().length;
-      tryPlay(videoElement);
     };
     
     const handleTrackRemoved = (event: MediaStreamTrackEvent) => {
-      console.log("VideoTile: Track removed for", participantId, event.track.kind);
+      console.log("[VideoTile] Track removed for", participantId, event.track.kind);
+      lastTrackCountRef.current = stream.getTracks().length;
+      
       if (event.track.kind === 'video') {
         setHasVideoTrack(stream.getVideoTracks().length > 0);
       }
-      lastTrackCountRef.current = stream.getTracks().length;
     };
     
-    // Track-level listeners
+    // Video track-level listeners
     const handleTrackEnded = () => {
-      console.log("VideoTile: Track ended for", participantId);
+      console.log("[VideoTile] Video track ended for", participantId);
       setHasVideoTrack(false);
     };
     
     const handleTrackUnmute = () => {
-      console.log("VideoTile: Track unmuted for", participantId);
+      console.log("[VideoTile] Video track unmuted for", participantId);
       setHasVideoTrack(true);
       tryPlay(videoElement);
     };
     
     const handleTrackMute = () => {
-      console.log("VideoTile: Track muted for", participantId);
-      // Don't set hasVideoTrack to false on mute - track is still there, just muted
+      console.log("[VideoTile] Video track muted for", participantId);
+      // Keep hasVideoTrack true - track exists, just muted
+      // User will see frozen frame or black depending on browser
     };
     
-    // Add listeners
+    // Attach stream-level listeners
     stream.addEventListener('addtrack', handleTrackAdded);
     stream.addEventListener('removetrack', handleTrackRemoved);
     
+    // Attach video track-level listeners
     videoTracks.forEach(track => {
       track.addEventListener('ended', handleTrackEnded);
       track.addEventListener('unmute', handleTrackUnmute);
       track.addEventListener('mute', handleTrackMute);
     });
     
-    // Cleanup
+    // Cleanup function
     return () => {
       stream.removeEventListener('addtrack', handleTrackAdded);
       stream.removeEventListener('removetrack', handleTrackRemoved);
@@ -192,14 +215,14 @@ const VideoTile = memo(function VideoTile({
   
   // Video element event handlers
   const handleLoadedMetadata = useCallback(() => {
-    console.log("VideoTile: Metadata loaded for", participantId);
+    console.log("[VideoTile] Metadata loaded for", participantId);
     if (videoRef.current) {
       tryPlay(videoRef.current);
     }
   }, [participantId, tryPlay]);
   
   const handleCanPlay = useCallback(() => {
-    console.log("VideoTile: Can play for", participantId);
+    console.log("[VideoTile] Can play for", participantId);
     if (videoRef.current) {
       tryPlay(videoRef.current);
     }

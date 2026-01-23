@@ -53,6 +53,11 @@
     overflow: hidden;
     grid-gap: 10px;
     box-sizing: border-box;
+    /* Auto-fit grid for dynamic participant count */
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    grid-auto-rows: minmax(200px, 1fr);
+    align-content: center;
+    justify-content: center;
 }
 
 .remote-video-container video {
@@ -525,6 +530,14 @@
 }
 
 /* Video Tile Wrapper Styles */
+.video-tile-container {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    border-radius: 0.75rem;
+    overflow: hidden;
+}
+
 .video-tile-wrapper {
     position: relative;
     width: 100%;
@@ -532,6 +545,19 @@
     border-radius: 0.75rem;
     overflow: hidden;
     background-color: #2a2b26;
+}
+
+.video-tile-wrapper.connecting {
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.7;
+    }
 }
 
 .video-tile-wrapper video {

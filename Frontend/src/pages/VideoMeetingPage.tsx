@@ -114,7 +114,10 @@ export default function VideoMeetingPage() {
   const [streamUpdateCounter, setStreamUpdateCounter] = useState(0);
   
   const [localStreamReady, setLocalStreamReady] = useState<boolean>(false);
-  const pendingConnectionsRef = useRef<string[]>([]);
+  
+  // Pending connections: store clientId and whether to create an offer
+  const pendingConnectionsRef = useRef<Array<{clientId: string, createOffer: boolean}>>([]);
+  
   const connectionsRef = useRef<ConnectionsType>(connectionsStore);
   
   // Add ref to track if video state was updated
@@ -220,8 +223,8 @@ export default function VideoMeetingPage() {
         
         // Process the pending connections with a small delay to ensure all states are updated
         setTimeout(() => {
-          pendingConnections.forEach(clientId => {
-            createConnectionForClient(clientId, true);
+          pendingConnections.forEach(({ clientId, createOffer }) => {
+            createConnectionForClient(clientId, createOffer);
           });
         }, 500);
       }
@@ -247,24 +250,35 @@ export default function VideoMeetingPage() {
 
   // ============================================
   // Helper function to add/update remote stream
-  // Uses ref for stream storage, state only for participant IDs
+  // 
+  // KEY RESPONSIBILITIES:
+  // 1. Store MediaStream in ref (NOT React state)
+  // 2. Merge tracks when ontrack fires multiple times
+  // 3. Manage participant ID list for rendering
+  // 4. Trigger UI updates when stream becomes ready
+  // 
   // MUST be defined BEFORE createConnectionForClient (which uses it)
   // ============================================
   const addRemoteStream = useCallback((clientId: string, remoteStream: MediaStream) => {
-    console.log("Adding/updating remote stream for client:", clientId, 
-      "Stream ID:", remoteStream.id,
-      "Video tracks:", remoteStream.getVideoTracks().length,
-      "Audio tracks:", remoteStream.getAudioTracks().length);
+    const videoTracks = remoteStream.getVideoTracks();
+    const audioTracks = remoteStream.getAudioTracks();
     
-    // Validate this is NOT our local stream (safety check)
+    console.log("[addRemoteStream] Called for:", clientId, {
+      streamId: remoteStream.id,
+      videoTracks: videoTracks.length,
+      audioTracks: audioTracks.length,
+      videoTrackStates: videoTracks.map(t => ({ id: t.id, ready: t.readyState, enabled: t.enabled }))
+    });
+    
+    // SAFETY: Validate this is NOT our local stream
     if (window.localStream && remoteStream.id === window.localStream.id) {
-      console.error("BUG: Attempted to add local stream as remote! Blocking.");
+      console.error("[addRemoteStream] BUG: Attempted to add local stream as remote! Blocking.");
       return;
     }
     
-    // Don't add self
+    // SAFETY: Don't add self
     if (clientId === socketIdRef.current) {
-      console.warn("Attempted to add self to remote videos, blocking");
+      console.warn("[addRemoteStream] Attempted to add self to remote videos, blocking");
       return;
     }
     
@@ -272,45 +286,63 @@ export default function VideoMeetingPage() {
     const existingStream = remoteStreamsRef.current.get(clientId);
     
     if (existingStream) {
-      // If we already have a stream for this client, merge tracks
-      // This handles the case where ontrack fires separately for audio and video
+      // ============================================
+      // CASE 1: Stream already exists - MERGE TRACKS
+      // This handles ontrack firing separately for audio/video
+      // ============================================
       const existingTrackIds = new Set(existingStream.getTracks().map(t => t.id));
       let tracksAdded = false;
+      let newTrackKinds: string[] = [];
       
       remoteStream.getTracks().forEach(track => {
         if (!existingTrackIds.has(track.id)) {
-          console.log("Adding new track to existing stream:", track.kind, track.id);
+          console.log("[addRemoteStream] Merging new track:", track.kind, track.id);
           existingStream.addTrack(track);
           tracksAdded = true;
+          newTrackKinds.push(track.kind);
         }
       });
       
-      // Only update if we added new tracks or stream ID changed
+      // Check if stream ID changed (indicates renegotiation)
       const streamIdChanged = existingStream.id !== remoteStream.id;
-      if (tracksAdded || streamIdChanged) {
-        // If stream ID changed, use the new stream entirely
-        if (streamIdChanged) {
-          console.log("Stream ID changed, replacing entire stream for:", clientId);
-          remoteStreamsRef.current.set(clientId, remoteStream);
-        }
+      
+      if (streamIdChanged) {
+        // Stream replaced entirely - use new stream
+        console.log("[addRemoteStream] Stream ID changed, replacing for:", clientId);
+        remoteStreamsRef.current.set(clientId, remoteStream);
+        setStreamUpdateCounter(c => c + 1);
+      } else if (tracksAdded) {
+        // New tracks merged - trigger UI update
+        console.log("[addRemoteStream] Tracks merged (", newTrackKinds.join(', '), ") for:", clientId);
         setStreamUpdateCounter(c => c + 1);
       }
+      // If nothing changed, no UI update needed
+      
     } else {
-      // New stream for this client
-      console.log("Storing NEW stream in ref for:", clientId);
+      // ============================================
+      // CASE 2: New stream - STORE AND RENDER
+      // ============================================
+      console.log("[addRemoteStream] Storing NEW stream for:", clientId);
+      
+      // Step 1: Store in ref FIRST (before any state updates)
       remoteStreamsRef.current.set(clientId, remoteStream);
       
-      // Update participant IDs in state (triggers re-render)
+      // Step 2: Add to participant list if not already present
+      // This triggers a re-render
       setRemoteParticipantIds(prev => {
         if (!prev.includes(clientId)) {
-          console.log("Adding new participant ID:", clientId);
+          console.log("[addRemoteStream] Adding participant to render list:", clientId);
           return [...prev, clientId];
         }
         return prev;
       });
       
-      // Force re-render to ensure VideoTile gets the new stream
-      setStreamUpdateCounter(c => c + 1);
+      // Step 3: Force additional re-render after React processes state update
+      // This ensures the render sees the ref value we just set
+      // Using queueMicrotask for better timing than setTimeout
+      queueMicrotask(() => {
+        setStreamUpdateCounter(c => c + 1);
+      });
     }
   }, []);
 
@@ -318,102 +350,199 @@ export default function VideoMeetingPage() {
   const createConnectionForClient = useCallback((clientId: string, createOffer = false) => {
     if (clientId === socketRef.current?.id) return;
     
-    console.log("Creating/updating connection for:", clientId);
+    console.log("createConnectionForClient:", clientId, "createOffer:", createOffer);
     
     // Check if stream is ready using both state and ref for reliability
     if (!window.localStream || !streamReadyRef.current) {
-      console.warn("Local stream not ready, queueing connection for:", clientId);
-      if (!pendingConnectionsRef.current.includes(clientId)) {
-        pendingConnectionsRef.current.push(clientId);
+      console.warn("Local stream not ready, queueing connection for:", clientId, "createOffer:", createOffer);
+      // Queue with the createOffer flag so we know whether to initiate later
+      const alreadyQueued = pendingConnectionsRef.current.some(p => p.clientId === clientId);
+      if (!alreadyQueued) {
+        pendingConnectionsRef.current.push({ clientId, createOffer });
       }
       return;
     }
     
-    // Create new RTCPeerConnection if it doesn't exist
-    if (!connectionsRef.current[clientId]) {
-      console.log("Creating new RTCPeerConnection for:", clientId);
-      connectionsRef.current[clientId] = new RTCPeerConnection(peerConfigConnection);
+    // ============================================
+    // CRITICAL FIX FOR 3+ USERS:
+    // Handle existing connections properly based on their state
+    // ============================================
+    const existingConnection = connectionsRef.current[clientId];
+    if (existingConnection) {
+      const state = existingConnection.connectionState;
+      const iceState = existingConnection.iceConnectionState;
       
-      // Handle ICE candidates
-      connectionsRef.current[clientId].onicecandidate = (event) => {
-        if (event.candidate && socketRef.current) {
-          console.log("Sending ICE candidate to:", clientId);
-          socketRef.current.emit(
-            "signal",
-            clientId,
-            JSON.stringify({ ice: event.candidate })
-          );
-        }
-      };
+      console.log(`Existing connection for ${clientId}: state=${state}, iceState=${iceState}, createOffer=${createOffer}`);
       
-      // Track ICE connection state changes
-      connectionsRef.current[clientId].oniceconnectionstatechange = () => {
-        const connectionState = connectionsRef.current[clientId].iceConnectionState;
-        console.log(`ICE connection state for ${clientId}: ${connectionState}`);
+      // Connection is in failed/closed state - close and recreate
+      if (state === 'failed' || state === 'closed' || iceState === 'failed' || iceState === 'closed') {
+        console.log(`Connection to ${clientId} is ${state}/${iceState}, recreating`);
+        existingConnection.close();
+        delete connectionsRef.current[clientId];
+        // Clear related state
+        remoteDescriptionSetRef.current.delete(clientId);
+        pendingIceCandidatesRef.current.delete(clientId);
+        // Continue to create new connection below
+      } else if (createOffer) {
+        // We need to create an offer for an existing connection
+        // This happens when an existing user needs to initiate with a new user
+        console.log(`Creating offer for existing connection to ${clientId}`);
         
-        // Handle failed connections with retry logic
-        if (connectionState === 'failed' || connectionState === 'disconnected') {
-          const retryCount = connectionRetryCount[clientId] || 0;
-          if (retryCount < 3) {
-            console.log(`Retrying connection to ${clientId}, attempt ${retryCount + 1}`);
-            // Wait a bit before retrying
-            setTimeout(() => {
-              // Close the old connection
-              connectionsRef.current[clientId].close();
-              delete connectionsRef.current[clientId];
-              
-              // Increment retry count
-              setConnectionRetryCount(prev => ({
-                ...prev,
-                [clientId]: retryCount + 1
-              }));
-              
-              // Create a new connection - use recursive call pattern
-              createConnectionForClient(clientId, true);
-            }, 1000);
-          } else {
-            console.log(`Maximum retry attempts reached for ${clientId}`);
+        // Ensure local tracks are added
+        const senders = existingConnection.getSenders();
+        if (senders.length === 0 && window.localStream) {
+          console.log("Adding local tracks to existing connection:", clientId);
+          window.localStream.getTracks().forEach(track => {
+            existingConnection.addTrack(track, window.localStream);
+          });
+        }
+        
+        // Create and send offer
+        existingConnection
+          .createOffer()
+          .then((description) => {
+            return existingConnection.setLocalDescription(description);
+          })
+          .then(() => {
+            console.log("Sending offer to:", clientId);
+            socketRef.current?.emit(
+              "signal",
+              clientId,
+              JSON.stringify({ sdp: existingConnection.localDescription })
+            );
+          })
+          .catch((e) => console.error("Error creating offer for existing connection:", e));
+        return;
+      } else {
+        // No offer needed - connection already exists
+        // For states: 'new', 'connecting', 'connected'
+        // The connection is in progress or already established
+        if (state === 'connected') {
+          console.log(`Connection to ${clientId} already connected, no action needed`);
+        } else {
+          console.log(`Connection to ${clientId} is ${state}, waiting for signaling`);
+        }
+        return;
+      }
+    }
+    
+    // Create new RTCPeerConnection
+    console.log("Creating new RTCPeerConnection for:", clientId);
+    connectionsRef.current[clientId] = new RTCPeerConnection(peerConfigConnection);
+    
+    // Handle ICE candidates
+    connectionsRef.current[clientId].onicecandidate = (event) => {
+      if (event.candidate && socketRef.current) {
+        console.log("Sending ICE candidate to:", clientId);
+        socketRef.current.emit(
+          "signal",
+          clientId,
+          JSON.stringify({ ice: event.candidate })
+        );
+      }
+    };
+    
+    // Track ICE connection state changes
+    connectionsRef.current[clientId].oniceconnectionstatechange = () => {
+      const connectionState = connectionsRef.current[clientId].iceConnectionState;
+      console.log(`ICE connection state for ${clientId}: ${connectionState}`);
+      
+      // Handle failed connections with retry logic
+      if (connectionState === 'failed' || connectionState === 'disconnected') {
+        const retryCount = connectionRetryCount[clientId] || 0;
+        if (retryCount < 3) {
+          console.log(`Retrying connection to ${clientId}, attempt ${retryCount + 1}`);
+          // Wait a bit before retrying
+          setTimeout(() => {
+            // Close the old connection
+            connectionsRef.current[clientId].close();
+            delete connectionsRef.current[clientId];
+            
+            // Clear ICE state
+            remoteDescriptionSetRef.current.delete(clientId);
+            pendingIceCandidatesRef.current.delete(clientId);
+            
+            // Increment retry count
+            setConnectionRetryCount(prev => ({
+              ...prev,
+              [clientId]: retryCount + 1
+            }));
+            
+            // Create a new connection - use recursive call pattern
+            createConnectionForClient(clientId, true);
+          }, 1000);
+        } else {
+          console.log(`Maximum retry attempts reached for ${clientId}`);
+        }
+      }
+    };
+    
+    // ============================================
+    // CRITICAL: ontrack handler for receiving remote media
+    // 
+    // ontrack fires ONCE PER TRACK (typically 2x: audio + video)
+    // We must handle this correctly:
+    // 1. Use event.streams[0] as source of truth (contains all tracks)
+    // 2. If no stream, create one and add the track
+    // 3. Pass to addRemoteStream which merges tracks intelligently
+    // 4. UI will show placeholder until stream has tracks
+    // ============================================
+    connectionsRef.current[clientId].ontrack = (event) => {
+      console.log("[ontrack] Received track from:", clientId, 
+        "Kind:", event.track.kind, 
+        "ReadyState:", event.track.readyState,
+        "Enabled:", event.track.enabled);
+      
+      // Get the remote stream - event.streams[0] is the source of truth
+      // It contains ALL tracks that have been negotiated for this peer
+      let remoteStream = event.streams[0];
+      
+      if (!remoteStream) {
+        // Fallback: create stream manually (rare edge case)
+        console.log("[ontrack] No stream in event, creating new MediaStream for:", clientId);
+        
+        // Check if we already have a stream for this client
+        const existingStream = remoteStreamsRef.current.get(clientId);
+        if (existingStream) {
+          // Add track to existing stream
+          console.log("[ontrack] Adding track to existing stream for:", clientId);
+          const existingTrackIds = new Set(existingStream.getTracks().map(t => t.id));
+          if (!existingTrackIds.has(event.track.id)) {
+            existingStream.addTrack(event.track);
           }
-        }
-      };
-      
-      // Handle remote stream - ontrack fires once per track (audio + video)
-      // We need to handle this correctly without losing tracks due to debouncing
-      connectionsRef.current[clientId].ontrack = (event) => {
-        console.log("Received track from:", clientId, "Track kind:", event.track.kind);
-        
-        // Get the remote stream - use event.streams[0] if available,
-        // otherwise create a new stream and add the track
-        let remoteStream = event.streams[0];
-        
-        if (!remoteStream) {
-          console.log("No stream in event, creating new MediaStream for:", clientId);
+          remoteStream = existingStream;
+        } else {
+          // Create new stream
           remoteStream = new MediaStream();
           remoteStream.addTrack(event.track);
         }
-        
-        // Log stream details for debugging
-        console.log("Remote stream for", clientId, "- Audio tracks:", 
-          remoteStream.getAudioTracks().length, "Video tracks:", 
-          remoteStream.getVideoTracks().length);
-        
-        // CRITICAL: Don't use debouncing that cancels previous calls
-        // ontrack fires multiple times (once per track) and we need ALL tracks
-        // Instead, use a simple approach: always update with the latest stream
-        addRemoteStream(clientId, remoteStream);
-      };
-      
-      // Add local stream to the new connection using tracks (modern approach)
-      try {
-        if (window.localStream) {
-          console.log("Adding local tracks to new connection:", clientId);
-          window.localStream.getTracks().forEach(track => {
-            connectionsRef.current[clientId].addTrack(track, window.localStream);
-          });
-        }
-      } catch (err) {
-        console.error("Error adding tracks to new connection:", err);
       }
+      
+      // Log stream state for debugging
+      console.log("[ontrack] Stream state for", clientId, ":", {
+        streamId: remoteStream.id,
+        audioTracks: remoteStream.getAudioTracks().length,
+        videoTracks: remoteStream.getVideoTracks().length,
+        totalTracks: remoteStream.getTracks().length
+      });
+      
+      // Pass to addRemoteStream - it handles:
+      // - Storing in ref
+      // - Merging tracks if stream already exists
+      // - Triggering UI update
+      addRemoteStream(clientId, remoteStream);
+    };
+    
+    // Add local stream to the new connection using tracks (modern approach)
+    try {
+      if (window.localStream) {
+        console.log("Adding local tracks to new connection:", clientId);
+        window.localStream.getTracks().forEach(track => {
+          connectionsRef.current[clientId].addTrack(track, window.localStream);
+        });
+      }
+    } catch (err) {
+      console.error("Error adding tracks to new connection:", err);
     }
     
     // If createOffer flag is true, create an offer
@@ -653,6 +782,18 @@ export default function VideoMeetingPage() {
       if (!connectionsRef.current[fromId]) {
         console.log("Creating connection for incoming signal from:", fromId);
         createConnectionForClient(fromId, false);
+      }
+      
+      // CRITICAL: Verify connection was actually created
+      // createConnectionForClient may queue and return if stream isn't ready
+      if (!connectionsRef.current[fromId]) {
+        console.warn("Connection not created yet for:", fromId, "- signal will be lost");
+        // Try again with a small delay
+        setTimeout(() => {
+          console.log("Retrying gotMessageFromServer for:", fromId);
+          gotMessageFromServer(fromId, message);
+        }, 100);
+        return;
       }
       
       // Ensure local tracks are added to the connection before processing SDP
@@ -935,16 +1076,27 @@ export default function VideoMeetingPage() {
         // ============================================
         // CASE 1: I am the new user who just joined
         // ============================================
-        console.log("I am the new user - waiting for offers from existing participants");
+        console.log("I am the new user - setting up connections for existing participants");
         
-        // Create peer connections for all existing users (but don't create offers)
-        // Existing users will send us offers, and we'll respond with answers
-        clients.forEach((clientId) => {
-          if (clientId !== socketRef.current?.id) {
-            // Just set up the connection infrastructure, no offer
-            // The existing user will create the offer and send it to us
-            createConnectionForClient(clientId, false);
-          }
+        // Get list of OTHER clients (not me)
+        const otherClients = clients.filter(c => c !== socketRef.current?.id);
+        console.log("Other clients I need to connect to:", otherClients);
+        
+        // Add all existing users to our participant list
+        otherClients.forEach((clientId) => {
+          // Add to Redux participants
+          dispatch(addParticipant({
+            id: clientId,
+            name: `Participant`,
+            isHost: false,
+            micOn: false,
+            camOn: false,
+            joinedAt: Date.now(),
+          }));
+          
+          // Create peer connection infrastructure (no offer - existing users will send offers)
+          // The existing user will create the offer and send it to us
+          createConnectionForClient(clientId, false);
         });
         
       } else {
@@ -963,7 +1115,6 @@ export default function VideoMeetingPage() {
           joinedAt: Date.now(),
         }));
         
-        // *** THIS IS THE KEY FIX ***
         // Existing users MUST create offers for the new user
         // This triggers the WebRTC handshake immediately
         if (window.localStream && streamReadyRef.current) {
@@ -971,8 +1122,9 @@ export default function VideoMeetingPage() {
           createConnectionForClient(userId, true); // createOffer = true
         } else {
           console.warn("Local stream not ready, queueing connection for:", userId);
-          if (!pendingConnectionsRef.current.includes(userId)) {
-            pendingConnectionsRef.current.push(userId);
+          const alreadyQueued = pendingConnectionsRef.current.some(p => p.clientId === userId);
+          if (!alreadyQueued) {
+            pendingConnectionsRef.current.push({ clientId: userId, createOffer: true });
           }
         }
       }
@@ -1479,8 +1631,8 @@ export default function VideoMeetingPage() {
       
       // Process connections with a small delay to ensure state is fully updated
       setTimeout(() => {
-        pendingConnections.forEach(clientId => {
-          createConnectionForClient(clientId, true);
+        pendingConnections.forEach(({ clientId, createOffer }) => {
+          createConnectionForClient(clientId, createOffer);
         });
       }, 500);
     }
@@ -1598,16 +1750,40 @@ export default function VideoMeetingPage() {
                     <p>No other participants</p>
                   </div>
                 ) : (
+                  // ============================================
+                  // CRITICAL UI FIX: Smart stream readiness detection
+                  // - Render VideoTile ONLY when stream has at least one track
+                  // - Show "Connecting..." when waiting for any tracks
+                  // - Show "Camera off" placeholder when audio-only (handled by VideoTile)
+                  // ============================================
                   remoteParticipantIds.map((participantId) => {
                     // Get stream from ref (not from state)
                     const stream = remoteStreamsRef.current.get(participantId);
+                    
+                    // Stream readiness check:
+                    // - Stream must exist
+                    // - Stream must have at least ONE track (audio or video)
+                    // VideoTile handles the case where video track is missing (shows avatar)
+                    const isStreamReady = stream && stream.getTracks().length > 0;
+                    
                     return (
-                      <VideoTile 
-                        key={participantId} 
-                        participantId={participantId}
-                        stream={stream || null}
-                        streamUpdateCounter={streamUpdateCounter}
-                      />
+                      <div key={participantId} className="video-tile-container">
+                        {isStreamReady ? (
+                          <VideoTile 
+                            participantId={participantId}
+                            stream={stream}
+                            streamUpdateCounter={streamUpdateCounter}
+                          />
+                        ) : (
+                          // Show connecting placeholder while waiting for ANY tracks
+                          <div className="video-tile-wrapper connecting">
+                            <div className="video-placeholder">
+                              <span className="placeholder-icon">⏳</span>
+                              <span className="placeholder-text">Connecting...</span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     );
                   })
                 )}

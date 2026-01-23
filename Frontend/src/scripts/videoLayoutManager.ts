@@ -17,15 +17,26 @@ export const updateVideoLayout = (
 ): void => {
   if (!container) return;
   
+  // Get all tile containers (wrappers around VideoTile components)
+  const tileContainers = container.querySelectorAll('.video-tile-container, .video-tile-wrapper') as NodeListOf<HTMLDivElement>;
   const videos = container.querySelectorAll('video') as NodeListOf<CustomHTMLVideoElement>;
   
   // Reset container styles
   container.style.gridTemplateColumns = '';
   container.style.gridTemplateRows = '';
-  container.style.gridGap = '10px'; // Increased gap for better separation
+  container.style.gridGap = '10px';
   container.style.width = '100%';
   container.style.height = '100%';
-  container.style.padding = '10px'; // Add padding to prevent videos from touching container edge
+  container.style.padding = '10px';
+  container.style.display = ''; // Reset display to allow grid/flex override
+  
+  // Reset tile container styles
+  tileContainers.forEach(tile => {
+    tile.style.width = '100%';
+    tile.style.height = '100%';
+    tile.style.position = '';
+    tile.style.transition = ''; // Reset any transitions
+  });
   
   // Get container dimensions for responsive sizing
   const containerRect = container.getBoundingClientRect();
@@ -242,6 +253,11 @@ export const updateLocalVideoPosition = (
     localVideoContainer.style.position = 'static';
     localVideoContainer.style.margin = '0 auto';
     localVideoContainer.style.aspectRatio = '16/9';
+    localVideoContainer.style.transition = ''; // Reset transition
+    localVideoContainer.style.boxShadow = ''; // Reset shadow
+    localVideoContainer.style.zIndex = ''; // Reset z-index
+    localVideoContainer.style.right = ''; // Reset positioning
+    localVideoContainer.style.bottom = '';
   } else if (isScreenSharing) {
     // During screen sharing, make local video a small picture-in-picture
     if (isMobile) {
@@ -281,5 +297,7 @@ export const updateLocalVideoPosition = (
     localVideoContainer.style.position = 'absolute';
     localVideoContainer.style.zIndex = '100';
     localVideoContainer.style.boxShadow = '0 2px 10px rgba(0,0,0,0.4)';
+    localVideoContainer.style.transition = 'all 0.3s ease';
+    localVideoContainer.style.margin = ''; // Reset margin from centered state
   }
 };
