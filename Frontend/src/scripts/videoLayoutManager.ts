@@ -2,13 +2,7 @@
  * Video Layout Manager for handling dynamic arrangement of video elements
  */
 
-// Define custom HTML video element with additional dataset properties
-interface CustomHTMLVideoElement extends HTMLVideoElement {
-  dataset: {
-    isScreenShare?: string;
-    socketId?: string;
-  }
-}
+import { CustomHTMLVideoElement } from '@/types';
 
 /**
  * Adjusts the layout of videos based on count and screen sharing status

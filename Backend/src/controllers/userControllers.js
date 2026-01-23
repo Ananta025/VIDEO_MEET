@@ -64,7 +64,7 @@ const loginUser = async (req, res)=>{
         const errors = validationResult(req);
         if(!errors.isEmpty()){
             return res.status(400).json({
-                succes:false,
+                success: false,
                 errors: errors.array()
             })
         }
@@ -96,7 +96,7 @@ const loginUser = async (req, res)=>{
         {
             expiresIn: '2h'
         });
-        return res.status(201).json({
+        return res.status(200).json({
             success: true,
             message: 'User logged in successfully',
             token,
@@ -238,23 +238,18 @@ const addToHistory = async (req, res) => {
         }
         
         // Extract the meeting ID from the meetingLink
-        let customMeetingId;
+        let meetingId;
         try {
             const url = new URL(meetingLink);
             const pathParts = url.pathname.split('/');
-            customMeetingId = pathParts[pathParts.length - 1];
+            meetingId = pathParts[pathParts.length - 1];
         } catch (err) {
             // If not a valid URL, use the last part after the last slash
-            customMeetingId = meetingLink.split('/').pop();
+            meetingId = meetingLink.split('/').pop();
         }
         
-        // Check if meeting with this ID already exists
-        const existingMeeting = await meetingModel.findOne({
-            $or: [
-                { meetingLink: { $regex: customMeetingId, $options: 'i' } },
-                { customMeetingId: customMeetingId }
-            ]
-        });
+        // Check if meeting with this meetingId already exists
+        const existingMeeting = await meetingModel.findOne({ meetingId });
         
         if (existingMeeting) {
             // If meeting exists, return it without creating a new one
@@ -265,11 +260,11 @@ const addToHistory = async (req, res) => {
             });
         }
         
-        // Create new meeting with customMeetingId
+        // Create new meeting with meetingId
         const meeting = await meetingModel.create({
             ...req.body,
+            meetingId, // Store the public meeting ID string
             hostId: user._id,
-            customMeetingId, // Store the custom ID
             status: req.body.status || 'scheduled'
         });
         

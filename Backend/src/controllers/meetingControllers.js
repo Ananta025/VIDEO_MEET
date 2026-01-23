@@ -23,6 +23,63 @@ if (!fs.existsSync(transcriptsDir)) {
     fs.mkdirSync(transcriptsDir, { recursive: true });
 }
 
+/**
+ * Helper function to find a meeting by its public meetingId string.
+ * This prevents CastError by never querying _id with non-ObjectId strings.
+ * 
+ * @param {string} meetingId - The public meeting ID (e.g., "meeting-f52oxj4")
+ * @returns {Promise<Document|null>} The meeting document or null
+ */
+const findMeetingByMeetingId = async (meetingId) => {
+    if (!meetingId) return null;
+    
+    // Query by the meetingId field (string), NOT by _id (ObjectId)
+    return meetingModel.findOne({ meetingId });
+};
+
+/**
+ * Helper function to find or create a meeting by meetingId.
+ * Implements "create-on-first-access" pattern to eliminate race conditions.
+ * 
+ * @param {string} meetingId - The public meeting ID (e.g., "meeting-f52oxj4")
+ * @param {string|null} hostId - Optional host user ID
+ * @returns {Promise<{meeting: Document, created: boolean}>}
+ */
+const findOrCreateMeeting = async (meetingId, hostId = null) => {
+    if (!meetingId) return { meeting: null, created: false };
+    
+    // First, try to find existing meeting
+    let meeting = await meetingModel.findOne({ meetingId });
+    
+    if (meeting) {
+        return { meeting, created: false };
+    }
+    
+    // Meeting doesn't exist - create it on-demand
+    // This eliminates the race condition where frontend navigates before DB write
+    try {
+        meeting = await meetingModel.create({
+            meetingId,
+            title: `Meeting ${new Date().toLocaleString()}`,
+            startTime: new Date(),
+            endTime: new Date(Date.now() + 3600000), // 1 hour default
+            hostId: hostId, // May be null initially
+            meetingLink: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/meeting/${meetingId}`,
+            status: 'ongoing'
+        });
+        
+        console.log(`Created meeting on-demand: ${meetingId}`);
+        return { meeting, created: true };
+    } catch (createErr) {
+        // Handle race condition where another request created it first
+        if (createErr.code === 11000) { // Duplicate key error
+            meeting = await meetingModel.findOne({ meetingId });
+            return { meeting, created: false };
+        }
+        throw createErr;
+    }
+};
+
 const updateMeetingStatus = async(req, res) => {
     try {
         const { meetingId } = req.params;
@@ -35,41 +92,22 @@ const updateMeetingStatus = async(req, res) => {
             });
         }
 
-        // Create query conditions to find the meeting by ID or link
-        let queryConditions;
-
-        // Check if meetingId is a valid ObjectId
-        const isValidObjectId = meetingId.match(/^[0-9a-fA-F]{24}$/);
-
-        if (isValidObjectId) {
-            // If it's a valid ObjectId, search by _id
-            queryConditions = { _id: meetingId };
-        } else {
-            // For custom format IDs, search by meetingLink containing the ID 
-            // or by the custom ID directly if you store it separately
-            queryConditions = {
-                $or: [
-                    { meetingLink: { $regex: meetingId, $options: 'i' } },
-                    { customMeetingId: meetingId } // If you store custom IDs separately
-                ]
-            };
-        }
-
-        // Find and update the meeting
+        // Find and update the meeting by meetingId string field
         const updatedMeeting = await meetingModel.findOneAndUpdate(
-            queryConditions, {
+            { meetingId }, // Query by meetingId string, NOT _id
+            {
                 status,
                 endTime,
-                // Add a timestamp for the update
                 updatedAt: new Date()
-            }, {
+            },
+            {
                 new: true,
                 runValidators: true
             }
         );
 
         if (!updatedMeeting) {
-            console.log(`Meeting not found with criteria:`, queryConditions);
+            console.log(`Meeting not found with meetingId:`, meetingId);
             return res.status(404).json({
                 success: false,
                 message: 'Meeting not found'
@@ -93,10 +131,23 @@ const updateMeetingStatus = async(req, res) => {
 // Create a new meeting
 const createMeeting = async(req, res) => {
     try {
-        const { title, description, startTime, endTime, meetingLink, password, isRecurring } = req.body;
+        const { title, description, startTime, endTime, meetingLink, meetingId, password, isRecurring } = req.body;
         const hostId = req.user._id;
 
+        // Generate meetingId if not provided (extract from meetingLink or generate new)
+        let finalMeetingId = meetingId;
+        if (!finalMeetingId && meetingLink) {
+            // Extract meeting ID from link (e.g., "http://example.com/meeting/meeting-f52oxj4")
+            const urlParts = meetingLink.split('/');
+            finalMeetingId = urlParts[urlParts.length - 1];
+        }
+        if (!finalMeetingId) {
+            // Generate a new meeting ID if not provided
+            finalMeetingId = `meeting-${Math.random().toString(36).substring(2, 9)}`;
+        }
+
         const meeting = await meetingModel.create({
+            meetingId: finalMeetingId,
             title,
             description,
             startTime,
@@ -128,7 +179,8 @@ const joinMeeting = async(req, res) => {
         const { meetingId } = req.body;
         const userId = req.user._id;
 
-        const meeting = await meetingModel.findById(meetingId);
+        // Use meetingId field, NOT _id
+        const meeting = await findMeetingByMeetingId(meetingId);
         if (!meeting) {
             return res.status(404).json({
                 success: false,
@@ -162,7 +214,8 @@ const leaveMeeting = async(req, res) => {
         const { meetingId } = req.body;
         const userId = req.user._id;
 
-        const meeting = await meetingModel.findById(meetingId);
+        // Use meetingId field, NOT _id
+        const meeting = await findMeetingByMeetingId(meetingId);
         if (!meeting) {
             return res.status(404).json({
                 success: false,
@@ -195,7 +248,8 @@ const endMeeting = async(req, res) => {
         const { meetingId } = req.body;
         const userId = req.user._id;
 
-        const meeting = await meetingModel.findById(meetingId);
+        // Use meetingId field, NOT _id
+        const meeting = await findMeetingByMeetingId(meetingId);
         if (!meeting) {
             return res.status(404).json({
                 success: false,
@@ -235,33 +289,23 @@ const getMeetingDetails = async(req, res) => {
     try {
         const { meetingId } = req.params;
 
-        // Create query conditions to find the meeting by ID or link
-        let queryConditions;
-
-        // Check if meetingId is a valid ObjectId
-        const isValidObjectId = meetingId.match(/^[0-9a-fA-F]{24}$/);
-
-        if (isValidObjectId) {
-            // If it's a valid ObjectId, search by _id
-            queryConditions = { _id: meetingId };
-        } else {
-            // For custom format IDs, search by meetingLink containing the ID 
-            // or by the custom ID directly
-            queryConditions = {
-                $or: [
-                    { meetingLink: { $regex: meetingId, $options: 'i' } },
-                    { customMeetingId: meetingId }
-                ]
-            };
+        if (!meetingId) {
+            return res.status(400).json({
+                success: false,
+                message: 'Meeting ID is required'
+            });
         }
 
-        // First get the meeting without populating to avoid potential issues
-        const meeting = await meetingModel.findOne(queryConditions);
+        // Use findOrCreateMeeting to implement "create-on-first-access" pattern
+        // This eliminates the race condition where frontend navigates before meeting exists
+        const hostId = req.user?._id || null; // Use authenticated user as host if available
+        const { meeting, created } = await findOrCreateMeeting(meetingId, hostId);
 
         if (!meeting) {
-            return res.status(404).json({
+            // This should never happen with valid meetingId format
+            return res.status(500).json({
                 success: false,
-                message: 'Meeting not found'
+                message: 'Failed to retrieve or create meeting'
             });
         }
 
@@ -310,8 +354,8 @@ const uploadRecording = async(req, res) => {
         const recordingFormat = path.extname(req.file.originalname).substring(1); // Remove the dot
 
         try {
-            // Try to find and update the meeting if MongoDB is available
-            const meeting = await meetingModel.findById(meetingId);
+            // Try to find and update the meeting by meetingId string
+            const meeting = await findMeetingByMeetingId(meetingId);
 
             if (meeting) {
                 // Check if user is authorized (host or participant)
@@ -362,8 +406,8 @@ const generateTranscript = async(req, res) => {
     try {
         const { meetingId } = req.params;
 
-        // Find the meeting to get recording info
-        const meeting = await meetingModel.findById(meetingId);
+        // Find the meeting by meetingId string, NOT _id
+        const meeting = await findMeetingByMeetingId(meetingId);
 
         if (!meeting) {
             return res.status(404).json({
@@ -451,21 +495,27 @@ const getRecording = async(req, res) => {
     try {
         const { meetingId } = req.params;
 
-        // Find the meeting
-        const meeting = await meetingModel.findById(meetingId);
+        // Use findOrCreateMeeting for consistency - never 404 for valid meetingId
+        const { meeting } = await findOrCreateMeeting(meetingId);
 
         if (!meeting) {
-            return res.status(404).json({
+            return res.status(500).json({
                 success: false,
-                message: 'Meeting not found'
+                message: 'Failed to retrieve or create meeting'
             });
         }
 
-        // Check if recording exists
+        // Return empty recording structure instead of 404
+        // This prevents frontend errors when recording hasn't been made yet
         if (!meeting.recording || !meeting.recording.isRecorded) {
-            return res.status(404).json({
-                success: false,
-                message: 'No recording found for this meeting'
+            return res.status(200).json({
+                success: true,
+                data: {
+                    isRecorded: false,
+                    url: null,
+                    recordedAt: null,
+                    message: 'No recording available'
+                }
             });
         }
 
@@ -487,21 +537,34 @@ const getTranscript = async(req, res) => {
     try {
         const { meetingId } = req.params;
 
-        // Find the meeting
-        const meeting = await meetingModel.findById(meetingId);
-
-        if (!meeting) {
-            return res.status(404).json({
+        if (!meetingId) {
+            return res.status(400).json({
                 success: false,
-                message: 'Meeting not found'
+                message: 'Meeting ID is required'
             });
         }
 
-        // Check if transcript exists
-        if (!meeting.transcript || !meeting.transcript.isGenerated) {
-            return res.status(404).json({
+        // Use findOrCreateMeeting for consistency - never 404 for valid meetingId
+        const { meeting } = await findOrCreateMeeting(meetingId);
+
+        if (!meeting) {
+            return res.status(500).json({
                 success: false,
-                message: 'No transcript found for this meeting'
+                message: 'Failed to retrieve or create meeting'
+            });
+        }
+
+        // Return empty transcript structure instead of 404
+        // This prevents frontend errors when transcript hasn't been generated yet
+        if (!meeting.transcript || !meeting.transcript.isGenerated) {
+            return res.status(200).json({
+                success: true,
+                data: {
+                    isGenerated: false,
+                    content: null,
+                    generatedAt: null,
+                    message: 'Transcript not yet generated'
+                }
             });
         }
 
@@ -580,8 +643,8 @@ const downloadRecording = async(req, res) => {
     try {
         const { meetingId } = req.params;
 
-        // Find the meeting
-        const meeting = await meetingModel.findById(meetingId);
+        // Find the meeting by meetingId string, NOT _id
+        const meeting = await findMeetingByMeetingId(meetingId);
 
         if (!meeting) {
             return res.status(404).json({
@@ -641,8 +704,8 @@ const downloadTranscript = async(req, res) => {
         const { meetingId } = req.params;
         const { format = 'txt' } = req.query; // txt or vtt
 
-        // Find the meeting
-        const meeting = await meetingModel.findById(meetingId);
+        // Find the meeting by meetingId string, NOT _id
+        const meeting = await findMeetingByMeetingId(meetingId);
 
         if (!meeting) {
             return res.status(404).json({

@@ -13,10 +13,17 @@ const __dirname = path.dirname(__filename);
 // Set ffmpeg path
 ffmpeg.setFfmpegPath(ffmpegStatic);
 
-// Initialize OpenAI client
-const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY
-});
+// Lazy initialize OpenAI client - only when needed and API key is available
+let openai = null;
+
+const getOpenAIClient = () => {
+    if (!openai && process.env.OPENAI_API_KEY) {
+        openai = new OpenAI({
+            apiKey: process.env.OPENAI_API_KEY
+        });
+    }
+    return openai;
+};
 
 class TranscriptionService {
     constructor() {
@@ -55,8 +62,13 @@ class TranscriptionService {
     async transcribeWithWhisper(audioPath) {
         try {
             console.log('Starting transcription with OpenAI Whisper...');
+            
+            const client = getOpenAIClient();
+            if (!client) {
+                throw new Error('OpenAI client not available');
+            }
 
-            const transcription = await openai.audio.transcriptions.create({
+            const transcription = await client.audio.transcriptions.create({
                 file: fs.createReadStream(audioPath),
                 model: 'whisper-1',
                 language: 'en', // You can make this configurable

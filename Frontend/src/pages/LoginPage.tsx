@@ -1,5 +1,5 @@
 import { useState, useContext, useEffect } from "react";
-import { FaGoogle, FaFacebook } from "react-icons/fa";
+import { Mail, Lock } from "lucide-react";
 import axios from "axios";
 import { useNavigate, useLocation } from "react-router-dom";
 import { UserContext } from "../contexts/userContext";
@@ -33,7 +33,7 @@ export default function LoginPage() {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
   };
 
-  const handleSubmit =async (e: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setError("");
     try{
@@ -96,9 +96,9 @@ export default function LoginPage() {
   const wasMeetingRedirected = redirectPath && redirectPath.includes('meeting');
 
   return (
-    <div className="flex items-center justify-center min-h-screen bg-[url('/background.png')] bg-cover text-white">
-        <div className="w-full max-w-md p-8 rounded-lg bg-transparent border-2 border-white shadow-cyan-500 shadow-lg ">
-            <h2 className="text-2xl font-bold text-center mb-6">Login</h2>
+    <div className="flex items-center justify-center min-h-screen bg-black text-white">
+        <div className="w-full max-w-md p-8 rounded-3xl bg-black border border-gray-500">
+            <h2 className="text-3xl font-bold text-center mb-10">Login</h2>
             
             {/* Add message when redirected from meeting */}
             {wasMeetingRedirected && (
@@ -107,63 +107,59 @@ export default function LoginPage() {
               </div>
             )}
             
-            {error && <p className="text-red-500 text-sm text-center">{error}</p>}
-            <form onSubmit={handleSubmit} className="space-y-4">
-                <div>
+            {error && <p className="text-red-500 text-sm text-center mb-4">{error}</p>}
+            <form onSubmit={handleSubmit} className="space-y-6">
+                <div className="relative">
                     <label className="block text-sm font-medium">Email</label>
-                    <input
-                        type="email"
-                        value={email}
-                        onChange={(e) => setEmail(e.target.value)}
-                        className="w-full p-2 mt-1 rounded bg-gray-700 border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
+                    <div className="relative">
+                        <input
+                            type="email"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                            className="w-full py-2 pr-10 bg-black border-b-2 border-white focus:outline-none focus:border-white text-white placeholder-gray-500"
+                            placeholder=""
+                        />
+                        <Mail className="absolute right-2 top-1/2 transform -translate-y-1/2 text-white" size={20} />
+                    </div>
                 </div>
-                <div>
+                <div className="relative">
                     <label className="block text-sm font-medium">Password</label>
-                    <input
-                        type="password"
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        className="w-full p-2 mt-1 rounded bg-gray-700 border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
+                    <div className="relative">
+                        <input
+                            type="password"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            className="w-full py-2 pr-10 bg-black border-b-2 border-white focus:outline-none focus:border-white text-white placeholder-gray-500"
+                            placeholder=""
+                        />
+                        <Lock className="absolute right-2 top-1/2 transform -translate-y-1/2 text-white" size={20} />
+                    </div>
                 </div>
-                <div className="flex items-center justify-between">
-                    <label className="flex items-center space-x-2">
+                <div className="flex items-center justify-between text-sm">
+                    <label className="flex items-center space-x-2 cursor-pointer">
                         <input
                             type="checkbox"
                             checked={rememberMe}
                             onChange={() => setRememberMe(!rememberMe)}
-                            className="rounded text-blue-500 focus:ring-blue-500"
+                            className="w-4 h-4 rounded bg-black border-white cursor-pointer"
                         />
-                        <span className="text-sm">Remember Me</span>
+                        <span>Remember me</span>
                     </label>
-                    <a href="#" className="text-sm text-blue-400 hover:underline">Forgot Password?</a>
+                    <a href="#" className="hover:underline">Forgot Password?</a>
                 </div>
                 <button
                     type="submit"
-                    className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 rounded transition"
+                    className="w-full bg-white hover:bg-gray-200 text-black font-bold py-3 rounded-full transition"
                 >
                     Login
                 </button>
             </form>
-            <div className="flex items-center my-4">
-                <hr className="flex-grow border-gray-600" />
-                <span className="px-2 text-gray-400">OR</span>
-                <hr className="flex-grow border-gray-600" />
-            </div>
-            <div className="flex space-x-4">
-                <button className="w-full flex items-center justify-center bg-red-500 hover:bg-red-600 text-white py-2 rounded transition">
-                    <FaGoogle className="mr-2" /> Google
-                </button>
-                <button className="w-full flex items-center justify-center bg-blue-700 hover:bg-blue-800 text-white py-2 rounded transition">
-                    <FaFacebook className="mr-2" /> Facebook
-                </button>
-            </div>
-            <p className="text-sm mt-4 text-center">
+            
+            <p className="text-sm mt-6 text-center">
                 Don't have an account?{" "}
-                <a href="/register" className="text-blue-400 hover:underline">Register</a>
+                <a href="/register" className="hover:underline font-semibold">Signup now</a>
             </p>
         </div>
     </div>
-);
+  );
 }

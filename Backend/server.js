@@ -26,8 +26,12 @@ let port = defaultPort;
 const server = createServer(app);
 const io = connectToSocket(server);
 
+
 app.use(cors());
-app.use(express.json());
+
+
+// Limit JSON body size to prevent DoS attacks
+app.use(express.json({ limit: '10mb' }));
 app.use(cookieParser());
 
 // Serve static files from uploads directory

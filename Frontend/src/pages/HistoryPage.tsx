@@ -37,50 +37,7 @@ import axios from 'axios';
 import { UserContext } from '../contexts/userContext';
 import { useAuthCheck } from '../utils/AuthUtils';
 import Navbar from '../components/Navbar';
-
-interface Meeting {
-  _id: string;
-  title: string;
-  description?: string;
-  startTime: string;
-  endTime: string;
-  status: 'scheduled' | 'ongoing' | 'completed' | 'cancelled';
-  hostId: {
-    _id: string;
-    name: string;
-    email: string;
-  };
-  participants: Array<{
-    _id: string;
-    name: string;
-    email: string;
-  }>;
-  recording?: {
-    isRecorded: boolean;
-    recordingUrl: string;
-    recordingSize: number;
-    recordingFormat: string;
-    recordingStartTime: string;
-    recordingEndTime: string;
-  };
-  transcript?: {
-    isGenerated: boolean;
-    transcriptUrl: string;
-    transcriptText: string;
-    vttUrl?: string;
-    duration?: number;
-    generatedAt: string;
-  };
-  createdAt: string;
-}
-
-interface PaginationInfo {
-  currentPage: number;
-  totalPages: number;
-  totalMeetings: number;
-  hasNext: boolean;
-  hasPrev: boolean;
-}
+import { Meeting, PaginationInfo } from '@/types';
 
 const HistoryPage = () => {
   const navigate = useNavigate();

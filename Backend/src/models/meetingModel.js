@@ -1,10 +1,18 @@
 import mongoose from 'mongoose';
 
 const meetingSchema = new mongoose.Schema({
-    title: {
+    // Public-facing meeting ID (e.g., "meeting-f52oxj4")
+    // This is NOT the MongoDB _id - it's a human-readable string
+    meetingId: {
         type: String,
         required: true,
-        trim: true
+        unique: true,
+        index: true
+    },
+    title: {
+        type: String,
+        trim: true,
+        default: 'Untitled Meeting' // Default title for on-demand creation
     },
     description: {
         type: String,
@@ -12,16 +20,16 @@ const meetingSchema = new mongoose.Schema({
     },
     startTime: {
         type: Date,
-        required: true
+        default: Date.now // Default to now for on-demand creation
     },
     endTime: {
         type: Date,
-        required: true
+        default: () => new Date(Date.now() + 3600000) // Default to 1 hour from now
     },
     hostId: {
         type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
-        required: true
+        ref: 'User'
+        // Not required - may be set later when host joins
     },
     participants: [{
         type: mongoose.Schema.Types.ObjectId,
@@ -29,12 +37,7 @@ const meetingSchema = new mongoose.Schema({
     }],
     meetingLink: {
         type: String,
-        required: true,
-        unique: true
-    },
-    customMeetingId: {
-        type: String,
-        index: true // Add an index for better query performance
+        sparse: true // Allow null but enforce uniqueness when set
     },
     password: {
         type: String

@@ -4,6 +4,15 @@ import '../styles/VideoMeetingPage.css'
 import { updateVideoLayout, markAsScreenShare, updateLocalVideoPosition } from "../scripts/videoLayoutManager";
 import { UserContext } from '../contexts/userContext'
 import { useAuthCheck, validateMeetingAccess } from '../utils/AuthUtils'
+import { ConnectionsType, VideoStream, ChatMessage, ConnectionRetryCount } from '@/types';
+import { useAppSelector, useAppDispatch } from '@/app/hooks';
+import { selectMicOn, selectCamOn, selectScreenSharing } from '@/features/media/mediaSelectors';
+import { toggleMic, toggleCam, setScreenSharing, setPermissionGranted } from '@/features/media/mediaSlice';
+import { selectMeetingId, selectIsHost } from '@/features/meeting/meetingSelectors';
+import { setMeetingId, setJoined, resetMeeting } from '@/features/meeting/meetingSlice';
+import { selectAllParticipantIds, selectParticipantsById } from '@/features/participants/participantsSelectors';
+import { addParticipant, removeParticipant, clearParticipants } from '@/features/participants/participantsSlice';
+import VideoTile from '../components/VideoTile';
 
 import { IconButton, Button, TextField, Alert } from "@mui/material";
 import VideocamIcon from "@mui/icons-material/Videocam";
@@ -18,22 +27,8 @@ import PeopleIcon from "@mui/icons-material/People";
 import ThreeDotsIcon from "@mui/icons-material/MoreVert";
 import RecordingControls from "../components/RecordingControls";
 import { useNavigate, useParams } from 'react-router-dom';
-import io from 'socket.io-client';
+import io, { Socket } from 'socket.io-client';
 import axios from 'axios';
-
-// Define types for your WebRTC connections
-type ConnectionsType = {
-  [key: string]: RTCPeerConnection;
-};
-
-// Define type for video streams
-interface VideoStream {
-  socketId: string;
-  stream: MediaStream;
-  autoPlay: boolean;
-  playsInline: boolean;
-  isScreenShare?: boolean;
-}
 
 // Add server URL
 const server_url = import.meta.env.VITE_SERVER_URL;
@@ -72,21 +67,52 @@ export default function VideoMeetingPage() {
   const [meetingAccessChecked, setMeetingAccessChecked] = useState(false);
   const [meetingAccessError, setMeetingAccessError] = useState<string | null>(null);
   
+  // Redux state
+  const dispatch = useAppDispatch();
+  const micOn = useAppSelector(selectMicOn);
+  const camOn = useAppSelector(selectCamOn);
+  const screenSharing = useAppSelector(selectScreenSharing);
+  const reduxMeetingId = useAppSelector(selectMeetingId);
+  const reduxIsHost = useAppSelector(selectIsHost);
+  const participantIds = useAppSelector(selectAllParticipantIds);
+  const participantsById = useAppSelector(selectParticipantsById);
+  
   const [participentModal, setParticipentModal] = useState(false)
   const [isClosing, setIsClosing] = useState(false)
   const timeoutRef = useRef<NodeJS.Timeout | null>(null)
   const [videoAvailable, setVideoAvailable] = useState<boolean>(true);
   const [audioAvailable, setAudioAvailable] = useState<boolean>(true);
+  const [screenAvailable, setScreenAvailable] = useState<boolean>(true); // Added missing state
+  // Local state synced with Redux for track manipulation
   const [video, setVideo] = useState<boolean>(false);
   const [audio, setAudio] = useState<boolean>(false);
-    // Using isScreenSharing instead of screen
-  const [isScreenSharing, setIsScreenSharing] = useState<boolean>(false); // Added to track actual screen sharing state
-  const [messages, setMessages] = useState<{data: string, sender: string}[]>([]);
+  const [screen, setScreen] = useState<boolean>(false);
+  // isScreenSharing from Redux - local alias for backwards compatibility
+  const isScreenSharing = screenSharing;
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [message, setMessage] = useState<string>("");
   const [newMessages, setNewMessages] = useState<number>(0);
   const [askForUsername, setAskForUsername] = useState<boolean>(true);
   const [username, setUsername] = useState<string>("");
-  const [videos, setVideos] = useState<VideoStream[]>([]);
+  
+  // ============================================
+  // CRITICAL FIX: Store MediaStreams in useRef, NOT in React state
+  // MediaStream objects are mutable and don't work well with React's
+  // immutable state model. Storing them in state causes:
+  // - Missed re-renders when tracks change
+  // - Black video tiles
+  // - Stale stream references
+  // ============================================
+  
+  // Store only participant IDs in state (triggers re-renders)
+  const [remoteParticipantIds, setRemoteParticipantIds] = useState<string[]>([]);
+  
+  // Store actual MediaStream objects in a ref (mutable, doesn't trigger re-renders)
+  const remoteStreamsRef = useRef<Map<string, MediaStream>>(new Map());
+  
+  // Counter to force re-render when streams are updated
+  const [streamUpdateCounter, setStreamUpdateCounter] = useState(0);
+  
   const [localStreamReady, setLocalStreamReady] = useState<boolean>(false);
   const pendingConnectionsRef = useRef<string[]>([]);
   const connectionsRef = useRef<ConnectionsType>(connectionsStore);
@@ -99,9 +125,6 @@ export default function VideoMeetingPage() {
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const socketRef = useRef<Socket | null>(null);
   const socketIdRef = useRef<string>("");
-  
-  // Create connections object
-  const connections: ConnectionsType = {};
 
   // Add a ref for the chat display container
   const chatDisplayRef = useRef<HTMLDivElement>(null);
@@ -111,7 +134,7 @@ export default function VideoMeetingPage() {
   const localVideoContainerRef = useRef<HTMLDivElement>(null);
 
   // Add these state variables to the component
-  const [connectionRetryCount, setConnectionRetryCount] = useState<{[key: string]: number}>({});
+  const [connectionRetryCount, setConnectionRetryCount] = useState<ConnectionRetryCount>({});
   const streamReadyRef = useRef<boolean>(false);
 
   // Add these new state variables near the other state declarations
@@ -120,11 +143,31 @@ export default function VideoMeetingPage() {
   const [socketRetries, setSocketRetries] = useState<number>(0);
   const MAX_SOCKET_RETRIES = 3;
   const socketRetryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // ============================================
+  // ICE CANDIDATE QUEUEING
+  // ICE candidates may arrive before setRemoteDescription is called.
+  // We must queue them and apply after remote description is set.
+  // ============================================
+  const pendingIceCandidatesRef = useRef<Map<string, RTCIceCandidate[]>>(new Map());
+  
+  // Track which connections have remote description set
+  const remoteDescriptionSetRef = useRef<Set<string>>(new Set());
 
   // Add state for chat visibility on mobile
   const [isChatVisible, setIsChatVisible] = useState<boolean>(false);
-  const [isHost] = useState<boolean>(false); // Not using setIsHost
+  const [isMobileView, setIsMobileView] = useState<boolean>(window.innerWidth <= 768);
+  const isHost = reduxIsHost; // Use Redux state
   const [isRecording, setIsRecording] = useState<boolean>(false);
+
+  // Handle window resize for mobile detection
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobileView(window.innerWidth <= 768);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   const closeParticipantModal = () => {
     setIsClosing(true)
@@ -141,7 +184,7 @@ export default function VideoMeetingPage() {
   }, []);
 
   // Update the getPermissions function to properly handle stream readiness
-  const getPermissions = async () => {
+  const getPermissions = useCallback(async () => {
     try {
       console.log("Getting media permissions...");
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -155,6 +198,9 @@ export default function VideoMeetingPage() {
       
       setVideo(true);
       setAudio(true);
+      
+      // Update Redux permission state
+      dispatch(setPermissionGranted(true));
 
       window.localStream = stream;
       if (localVideoRef.current) {
@@ -179,26 +225,97 @@ export default function VideoMeetingPage() {
           });
         }, 500);
       }
-    } catch (err) {
+    } catch (err: unknown) {
       console.error("Error getting media permissions:", err);
-      if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+      const error = err as Error & { name?: string };
+      if (error.name === "NotFoundError" || error.name === "DevicesNotFoundError") {
         setVideoAvailable(false);
         setAudioAvailable(false);
       }
       
       // Even with no devices, we should create a black/silent stream
       console.log("Creating fallback black/silent stream");
-      const BlackSilence = (...args: Array<{width?: number, height?: number}>) => new MediaStream([silence(), black(...args[0])]);
+      const BlackSilence = () => new MediaStream([silence(), black()]);
       window.localStream = BlackSilence();
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = window.localStream;
       }
       setLocalStreamReady(true);
     }
-  });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dispatch]);
+
+  // ============================================
+  // Helper function to add/update remote stream
+  // Uses ref for stream storage, state only for participant IDs
+  // MUST be defined BEFORE createConnectionForClient (which uses it)
+  // ============================================
+  const addRemoteStream = useCallback((clientId: string, remoteStream: MediaStream) => {
+    console.log("Adding/updating remote stream for client:", clientId, 
+      "Stream ID:", remoteStream.id,
+      "Video tracks:", remoteStream.getVideoTracks().length,
+      "Audio tracks:", remoteStream.getAudioTracks().length);
+    
+    // Validate this is NOT our local stream (safety check)
+    if (window.localStream && remoteStream.id === window.localStream.id) {
+      console.error("BUG: Attempted to add local stream as remote! Blocking.");
+      return;
+    }
+    
+    // Don't add self
+    if (clientId === socketIdRef.current) {
+      console.warn("Attempted to add self to remote videos, blocking");
+      return;
+    }
+    
+    // Check existing stream
+    const existingStream = remoteStreamsRef.current.get(clientId);
+    
+    if (existingStream) {
+      // If we already have a stream for this client, merge tracks
+      // This handles the case where ontrack fires separately for audio and video
+      const existingTrackIds = new Set(existingStream.getTracks().map(t => t.id));
+      let tracksAdded = false;
+      
+      remoteStream.getTracks().forEach(track => {
+        if (!existingTrackIds.has(track.id)) {
+          console.log("Adding new track to existing stream:", track.kind, track.id);
+          existingStream.addTrack(track);
+          tracksAdded = true;
+        }
+      });
+      
+      // Only update if we added new tracks or stream ID changed
+      const streamIdChanged = existingStream.id !== remoteStream.id;
+      if (tracksAdded || streamIdChanged) {
+        // If stream ID changed, use the new stream entirely
+        if (streamIdChanged) {
+          console.log("Stream ID changed, replacing entire stream for:", clientId);
+          remoteStreamsRef.current.set(clientId, remoteStream);
+        }
+        setStreamUpdateCounter(c => c + 1);
+      }
+    } else {
+      // New stream for this client
+      console.log("Storing NEW stream in ref for:", clientId);
+      remoteStreamsRef.current.set(clientId, remoteStream);
+      
+      // Update participant IDs in state (triggers re-render)
+      setRemoteParticipantIds(prev => {
+        if (!prev.includes(clientId)) {
+          console.log("Adding new participant ID:", clientId);
+          return [...prev, clientId];
+        }
+        return prev;
+      });
+      
+      // Force re-render to ensure VideoTile gets the new stream
+      setStreamUpdateCounter(c => c + 1);
+    }
+  }, []);
 
   // Create a helper function to set up a connection with proper error handling
-  const createConnectionForClient = (clientId: string, createOffer = false) => {
+  const createConnectionForClient = useCallback((clientId: string, createOffer = false) => {
     if (clientId === socketRef.current?.id) return;
     
     console.log("Creating/updating connection for:", clientId);
@@ -251,7 +368,7 @@ export default function VideoMeetingPage() {
                 [clientId]: retryCount + 1
               }));
               
-              // Create a new connection
+              // Create a new connection - use recursive call pattern
               createConnectionForClient(clientId, true);
             }, 1000);
           } else {
@@ -260,31 +377,30 @@ export default function VideoMeetingPage() {
         }
       };
       
-      // Handle remote stream with debounced updates
+      // Handle remote stream - ontrack fires once per track (audio + video)
+      // We need to handle this correctly without losing tracks due to debouncing
       connectionsRef.current[clientId].ontrack = (event) => {
-        console.log("Received track from:", clientId, event.streams[0]);
+        console.log("Received track from:", clientId, "Track kind:", event.track.kind);
         
-        // Use the first stream
-        const remoteStream = event.streams[0];
-        if (!remoteStream) return;
+        // Get the remote stream - use event.streams[0] if available,
+        // otherwise create a new stream and add the track
+        let remoteStream = event.streams[0];
         
-        // Use time-based debouncing for video updates
-        const now = Date.now();
-        if (now - lastVideoUpdateRef.current < 300) {
-          // If we recently updated videos, debounce this update
-          if (videoUpdateTimeoutRef.current) {
-            clearTimeout(videoUpdateTimeoutRef.current);
-          }
-          
-          videoUpdateTimeoutRef.current = setTimeout(() => {
-            addRemoteStream(clientId, remoteStream);
-            lastVideoUpdateRef.current = Date.now();
-          }, 300);
-        } else {
-          // It's been a while since last update, do it immediately
-          addRemoteStream(clientId, remoteStream);
-          lastVideoUpdateRef.current = now;
+        if (!remoteStream) {
+          console.log("No stream in event, creating new MediaStream for:", clientId);
+          remoteStream = new MediaStream();
+          remoteStream.addTrack(event.track);
         }
+        
+        // Log stream details for debugging
+        console.log("Remote stream for", clientId, "- Audio tracks:", 
+          remoteStream.getAudioTracks().length, "Video tracks:", 
+          remoteStream.getVideoTracks().length);
+        
+        // CRITICAL: Don't use debouncing that cancels previous calls
+        // ontrack fires multiple times (once per track) and we need ALL tracks
+        // Instead, use a simple approach: always update with the latest stream
+        addRemoteStream(clientId, remoteStream);
       };
       
       // Add local stream to the new connection using tracks (modern approach)
@@ -311,7 +427,7 @@ export default function VideoMeetingPage() {
             .setLocalDescription(description)
             .then(() => {
               console.log("Sending signal to:", clientId);
-              socketRef.current.emit(
+              socketRef.current?.emit(
                 "signal",
                 clientId,
                 JSON.stringify({
@@ -323,44 +439,12 @@ export default function VideoMeetingPage() {
         })
         .catch((e) => console.error("Error creating offer:", e));
     }
-  };
-
-  // Helper function to add remote stream with proper state management
-  const addRemoteStream = (clientId: string, remoteStream: MediaStream) => {
-    console.log("Adding/updating remote stream for client:", clientId);
-    
-    setVideos((prevVideos) => {
-      // Check if we already have this client's video
-      const existingIndex = prevVideos.findIndex(v => v.socketId === clientId);
-      
-      if (existingIndex >= 0) {
-        // Update existing video stream if needed
-        const currentVideo = prevVideos[existingIndex];
-        
-        // Check if the stream is different before updating
-        if (currentVideo.stream !== remoteStream) {
-          const updatedVideos = [...prevVideos];
-          updatedVideos[existingIndex] = {
-            ...currentVideo,
-            stream: remoteStream
-          };
-          return updatedVideos;
-        }
-        return prevVideos; // No change needed
-      } else {
-        // Add new video
-        return [
-          ...prevVideos,
-          {
-            socketId: clientId,
-            stream: remoteStream,
-            autoPlay: true,
-            playsInline: true,
-          },
-        ];
-      }
-    });
-  };
+  }, [connectionRetryCount, addRemoteStream]);
+  
+  // Helper function to get stream for a participant (used by VideoTile)
+  const getRemoteStream = useCallback((participantId: string): MediaStream | null => {
+    return remoteStreamsRef.current.get(participantId) || null;
+  }, []);
 
   const getUserMediaSuccess = (stream: MediaStream) => {
     try {
@@ -374,9 +458,14 @@ export default function VideoMeetingPage() {
     if (localVideoRef.current) {
       localVideoRef.current.srcObject = stream;
     }
+    
+    // Mark stream as ready
+    streamReadyRef.current = true;
+    setLocalStreamReady(true);
+    console.log("getUserMediaSuccess: Local stream set and ready");
 
-    for (let peerId in connectionsRef.current) {
-      if (peerId === socketRef.current.id) {
+    for (const peerId in connectionsRef.current) {
+      if (peerId === socketRef.current?.id) {
         continue;
       }
       
@@ -400,7 +489,7 @@ export default function VideoMeetingPage() {
         connectionsRef.current[peerId]
           .setLocalDescription(description)
           .then(() => {
-            socketRef.current.emit(
+            socketRef.current?.emit(
               "signal",
               peerId,
               JSON.stringify({ sdp: connectionsRef.current[peerId].localDescription })
@@ -424,14 +513,13 @@ export default function VideoMeetingPage() {
             console.log(err);
           }
           //Todo BlackSilence
-          const BlackSilence = (...args: Array<{width?: number, height?: number}>) =>
-            new MediaStream([silence(), black(...args[0])]);
+          const BlackSilence = () => new MediaStream([silence(), black()]);
           window.localStream = BlackSilence();
           if (localVideoRef.current) {
             localVideoRef.current.srcObject = window.localStream;
           }
           for (const peerId in connectionsRef.current) {
-            if (peerId === socketRef.current.id) {
+            if (peerId === socketRef.current?.id) {
               continue;
             }
             // removeStream is deprecated, use getSenders().forEach(sender => connection.removeTrack(sender)) instead
@@ -443,7 +531,7 @@ export default function VideoMeetingPage() {
               connectionsRef.current[peerId]
                 .setLocalDescription(description)
                 .then(() => {
-                  socketRef.current.emit(
+                  socketRef.current?.emit(
                     "signal",
                     peerId,
                     JSON.stringify({
@@ -477,68 +565,132 @@ export default function VideoMeetingPage() {
     return Object.assign(stream.getVideoTracks()[0], { enabled: false });
   };
 
-  const getUserMedia = () => {
-    if ((video && videoAvailable) || (audio && audioAvailable)) {
-      // Store current enabled states before getting new stream
-      const previousVideoEnabled = video;
-      const previousAudioEnabled = audio;
-      
-      navigator.mediaDevices
-        .getUserMedia({
-          video: videoAvailable ? video : false,
-          audio: audioAvailable ? audio : false,
-        })
-        .then((stream) => {
-          // Apply previous enabled states to new tracks
-          if (stream.getVideoTracks().length > 0) {
-            stream.getVideoTracks().forEach(track => {
-              track.enabled = previousVideoEnabled;
-            });
+  const getUserMedia = (): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      if ((video && videoAvailable) || (audio && audioAvailable)) {
+        // Store current enabled states before getting new stream
+        const previousVideoEnabled = video;
+        const previousAudioEnabled = audio;
+        
+        navigator.mediaDevices
+          .getUserMedia({
+            video: videoAvailable ? video : false,
+            audio: audioAvailable ? audio : false,
+          })
+          .then((stream) => {
+            // Apply previous enabled states to new tracks
+            if (stream.getVideoTracks().length > 0) {
+              stream.getVideoTracks().forEach(track => {
+                track.enabled = previousVideoEnabled;
+              });
+            }
+            
+            if (stream.getAudioTracks().length > 0) {
+              stream.getAudioTracks().forEach(track => {
+                track.enabled = previousAudioEnabled;
+              });
+            }
+            
+            // Continue with the rest of the process
+            getUserMediaSuccess(stream);
+            resolve();
+          })
+          .catch((err) => {
+            console.error("getUserMedia error:", err);
+            reject(err);
+          });
+      } else {
+        // No media requested - ensure we still have a valid stream (black/silence)
+        console.log("getUserMedia: No media requested, ensuring fallback stream");
+        
+        // Check if we already have a valid stream from getPermissions
+        if (window.localStream && window.localStream.active) {
+          console.log("Using existing localStream from getPermissions");
+          // Ensure local video ref is set
+          if (localVideoRef.current && !localVideoRef.current.srcObject) {
+            localVideoRef.current.srcObject = window.localStream;
           }
-          
-          if (stream.getAudioTracks().length > 0) {
-            stream.getAudioTracks().forEach(track => {
-              track.enabled = previousAudioEnabled;
-            });
+          streamReadyRef.current = true;
+          setLocalStreamReady(true);
+          resolve();
+        } else {
+          // Create a black/silence fallback stream
+          console.log("Creating black/silence fallback stream");
+          const BlackSilence = () => new MediaStream([silence(), black()]);
+          window.localStream = BlackSilence();
+          if (localVideoRef.current) {
+            localVideoRef.current.srcObject = window.localStream;
           }
-          
-          // Continue with the rest of the process
-          getUserMediaSuccess(stream);
-        })
-        .catch((err) => {
-          console.log(err);
-        });
-    } else {
-      try {
-        if (localVideoRef.current && localVideoRef.current.srcObject) {
-          const stream = localVideoRef.current.srcObject as MediaStream;
-          stream.getTracks().forEach((track) => track.stop());
+          streamReadyRef.current = true;
+          setLocalStreamReady(true);
+          resolve();
         }
-      } catch (err) {
-        console.log(err);
       }
-    }
+    });
   };
+
+  // ============================================
+  // Helper: Apply any pending ICE candidates for a peer
+  // Called after setRemoteDescription succeeds
+  // ============================================
+  const applyPendingIceCandidates = useCallback((peerId: string) => {
+    const pendingCandidates = pendingIceCandidatesRef.current.get(peerId);
+    if (pendingCandidates && pendingCandidates.length > 0) {
+      console.log(`Applying ${pendingCandidates.length} pending ICE candidates for:`, peerId);
+      pendingCandidates.forEach(candidate => {
+        connectionsRef.current[peerId]
+          ?.addIceCandidate(candidate)
+          .catch(e => console.error("Error applying pending ICE candidate:", e));
+      });
+      pendingIceCandidatesRef.current.delete(peerId);
+    }
+  }, []);
 
   const gotMessageFromServer = (fromId: string, message: string) => {
     const signal = JSON.parse(message);
     if (fromId !== socketIdRef.current) {
-      // Make sure connection exists
+      // Make sure connection exists with local tracks
       if (!connectionsRef.current[fromId]) {
+        console.log("Creating connection for incoming signal from:", fromId);
         createConnectionForClient(fromId, false);
       }
       
+      // Ensure local tracks are added to the connection before processing SDP
+      // This is crucial for the answer to include our media streams
+      if (window.localStream && connectionsRef.current[fromId]) {
+        const senders = connectionsRef.current[fromId].getSenders();
+        if (senders.length === 0) {
+          console.log("Adding local tracks to connection for:", fromId);
+          try {
+            window.localStream.getTracks().forEach(track => {
+              connectionsRef.current[fromId].addTrack(track, window.localStream);
+            });
+          } catch (err) {
+            console.error("Error adding tracks in gotMessageFromServer:", err);
+          }
+        }
+      }
+      
       if (signal.sdp) {
+        console.log("Processing SDP from:", fromId, "Type:", signal.sdp.type);
         connectionsRef.current[fromId]
           .setRemoteDescription(new RTCSessionDescription(signal.sdp))
           .then(() => {
+            // Mark remote description as set for this peer
+            remoteDescriptionSetRef.current.add(fromId);
+            
+            // Apply any pending ICE candidates that arrived before remote description
+            applyPendingIceCandidates(fromId);
+            
             if (signal.sdp.type === "offer") {
+              console.log("Received offer from:", fromId, "- creating answer");
               connectionsRef.current[fromId]
                 .createAnswer()
                 .then((description) => {
                   connectionsRef.current[fromId]
                     .setLocalDescription(description)
                     .then(() => {
+                      console.log("Sending answer to:", fromId);
                       if (socketRef.current) {
                         socketRef.current.emit(
                           "signal",
@@ -549,18 +701,35 @@ export default function VideoMeetingPage() {
                         );
                       }
                     })
-                    .catch((e) => console.log(e));
+                    .catch((e) => console.error("Error setting local description:", e));
                 })
-                .catch((e) => console.log(e));
+                .catch((e) => console.error("Error creating answer:", e));
+            } else if (signal.sdp.type === "answer") {
+              console.log("Received answer from:", fromId, "- connection established");
             }
           })
-          .catch((e) => console.log(e));
+          .catch((e) => console.error("Error setting remote description:", e));
       }
 
+      // ICE CANDIDATE QUEUEING FIX
+      // If remote description is not set yet, queue the candidate
       if (signal.ice) {
-        connectionsRef.current[fromId]
-          .addIceCandidate(new RTCIceCandidate(signal.ice))
-          .catch((e) => console.log(e));
+        const iceCandidate = new RTCIceCandidate(signal.ice);
+        
+        if (remoteDescriptionSetRef.current.has(fromId)) {
+          // Remote description is set, apply immediately
+          console.log("Applying ICE candidate immediately for:", fromId);
+          connectionsRef.current[fromId]
+            ?.addIceCandidate(iceCandidate)
+            .catch((e) => console.error("Error adding ICE candidate:", e));
+        } else {
+          // Queue the candidate for later
+          console.log("Queueing ICE candidate for:", fromId, "(remote description not set yet)");
+          if (!pendingIceCandidatesRef.current.has(fromId)) {
+            pendingIceCandidatesRef.current.set(fromId, []);
+          }
+          pendingIceCandidatesRef.current.get(fromId)!.push(iceCandidate);
+        }
       }
     }
   };
@@ -579,16 +748,16 @@ export default function VideoMeetingPage() {
     }
   }, [messages]);
 
-  // Update layout whenever videos array changes or screen sharing state changes
+  // Update layout whenever remote participants change or screen sharing state changes
   useEffect(() => {
     if (remoteVideoContainerRef.current) {
-      updateVideoLayout(remoteVideoContainerRef.current, videos.length, isScreenSharing);
+      updateVideoLayout(remoteVideoContainerRef.current, remoteParticipantIds.length, isScreenSharing);
     }
     
     if (localVideoContainerRef.current) {
-      updateLocalVideoPosition(localVideoContainerRef.current, videos.length, isScreenSharing);
+      updateLocalVideoPosition(localVideoContainerRef.current, remoteParticipantIds.length, isScreenSharing);
     }
-  }, [videos.length, isScreenSharing]);
+  }, [remoteParticipantIds.length, isScreenSharing]);
 
   // Add this function to toggle chat visibility on mobile
   const toggleChatVisibility = () => {
@@ -609,11 +778,11 @@ export default function VideoMeetingPage() {
       
       // Update video layouts
       if (remoteVideoContainerRef.current) {
-        updateVideoLayout(remoteVideoContainerRef.current, videos.length, isScreenSharing);
+        updateVideoLayout(remoteVideoContainerRef.current, remoteParticipantIds.length, isScreenSharing);
       }
       
       if (localVideoContainerRef.current) {
-        updateLocalVideoPosition(localVideoContainerRef.current, videos.length, isScreenSharing);
+        updateLocalVideoPosition(localVideoContainerRef.current, remoteParticipantIds.length, isScreenSharing);
       }
     };
     
@@ -621,7 +790,7 @@ export default function VideoMeetingPage() {
     return () => {
       window.removeEventListener('resize', handleResize);
     };
-  }, [videos.length, isScreenSharing, isChatVisible]);
+  }, [remoteParticipantIds.length, isScreenSharing, isChatVisible]);
 
   // Replace the connectToSocketServer function with this more robust implementation
   const connectToSocketServer = () => {
@@ -656,13 +825,19 @@ export default function VideoMeetingPage() {
       
       // Track connection status
       socketRef.current.on("connect", () => {
-        console.log("Connected to socket server with ID:", socketRef.current.id);
+        console.log("Connected to socket server with ID:", socketRef.current?.id);
         setSocketConnected(true);
         setSocketRetries(0); // Reset retry counter on successful connection
-        socketIdRef.current = socketRef.current.id;
+        socketIdRef.current = socketRef.current?.id ?? '';
+        
+        // Sync meeting ID to Redux
+        if (actualMeetingId) {
+          dispatch(setMeetingId(actualMeetingId));
+          dispatch(setJoined(true));
+        }
         
         // Join call room after successful connection
-        socketRef.current.emit("join-call", window.location.href);
+        socketRef.current?.emit("join-call", window.location.href);
         
         // Set up all the event handlers after successful connection
         setupSocketEventHandlers();
@@ -730,40 +905,76 @@ export default function VideoMeetingPage() {
         delete connectionsRef.current[id];
       }
       
-      setVideos((prevVideos) => prevVideos.filter((video) => video.socketId !== id));
+      // Clean up ICE candidate queue and remote description tracking
+      pendingIceCandidatesRef.current.delete(id);
+      remoteDescriptionSetRef.current.delete(id);
+      
+      // Remove from Redux participants
+      dispatch(removeParticipant(id));
+      
+      // Remove stream from ref and update participant IDs
+      remoteStreamsRef.current.delete(id);
+      setRemoteParticipantIds(prev => prev.filter(pid => pid !== id));
+      
+      // Force UI update
+      setStreamUpdateCounter(c => c + 1);
     });
     
     socketRef.current.on("user-joined", (userId: string, clients: string[]) => {
-      console.log("User joined:", userId, "Current clients:", clients);
+      console.log("User joined event - userId:", userId, "My ID:", socketRef.current?.id);
+      console.log("Current clients in room:", clients);
       
       if (!clients || !Array.isArray(clients)) {
         console.error("Invalid clients data received:", clients);
         return;
       }
       
-      // Create connections for all clients except self
-      clients.forEach((clientId) => {
-        if (clientId !== socketRef.current.id) {
-          createConnectionForClient(clientId);
-        }
-      });
+      const isNewUserMe = userId === socketRef.current?.id;
       
-      // If we're the new user, initiate offers to all existing users
-      if (userId === socketRef.current.id && streamReadyRef.current) {
-        console.log("I'm the new user, initiating connections");
+      if (isNewUserMe) {
+        // ============================================
+        // CASE 1: I am the new user who just joined
+        // ============================================
+        console.log("I am the new user - waiting for offers from existing participants");
+        
+        // Create peer connections for all existing users (but don't create offers)
+        // Existing users will send us offers, and we'll respond with answers
         clients.forEach((clientId) => {
-          if (clientId === socketRef.current.id) return;
-          
-          // Create connections with offers if local stream is ready
-          if (window.localStream && streamReadyRef.current) {
-            createConnectionForClient(clientId, true);
-          } else {
-            console.warn("Local stream not ready, postponing offer creation for:", clientId);
-            if (!pendingConnectionsRef.current.includes(clientId)) {
-              pendingConnectionsRef.current.push(clientId);
-            }
+          if (clientId !== socketRef.current?.id) {
+            // Just set up the connection infrastructure, no offer
+            // The existing user will create the offer and send it to us
+            createConnectionForClient(clientId, false);
           }
         });
+        
+      } else {
+        // ============================================
+        // CASE 2: Someone else joined - I'm existing user
+        // ============================================
+        console.log("New participant joined:", userId, "- I will create an offer for them");
+        
+        // Add new participant to Redux
+        dispatch(addParticipant({
+          id: userId,
+          name: `Participant`,
+          isHost: false,
+          micOn: false,
+          camOn: false,
+          joinedAt: Date.now(),
+        }));
+        
+        // *** THIS IS THE KEY FIX ***
+        // Existing users MUST create offers for the new user
+        // This triggers the WebRTC handshake immediately
+        if (window.localStream && streamReadyRef.current) {
+          console.log("Creating offer for new user:", userId);
+          createConnectionForClient(userId, true); // createOffer = true
+        } else {
+          console.warn("Local stream not ready, queueing connection for:", userId);
+          if (!pendingConnectionsRef.current.includes(userId)) {
+            pendingConnectionsRef.current.push(userId);
+          }
+        }
       }
     });
   };
@@ -773,19 +984,30 @@ export default function VideoMeetingPage() {
     try {
       setVideo(videoAvailable);
       setAudio(audioAvailable);
-      await getUserMedia();  // Wait for getUserMedia to complete
+      await getUserMedia();  // Wait for getUserMedia to complete (now properly returns Promise)
       
-      // Wait a bit to ensure the stream is fully initialized before connecting
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
-      // Make sure component is still mounted before connecting
-      if (streamReadyRef.current) {
-        connectToSocketServer(); // Connect to socket server after media is ready
+      // At this point, getUserMediaSuccess has been called and streamReadyRef should be true
+      // Verify the stream is actually ready
+      if (!streamReadyRef.current || !window.localStream) {
+        console.warn("Stream not ready after getUserMedia, using fallback");
+        const BlackSilence = () => new MediaStream([silence(), black()]);
+        window.localStream = BlackSilence();
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = window.localStream;
+        }
+        streamReadyRef.current = true;
+        setLocalStreamReady(true);
       }
+      
+      // Small delay to ensure DOM updates are complete
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      console.log("getMedia: Stream ready, connecting to socket server");
+      connectToSocketServer();
     } catch (err) {
       console.error("Error in getMedia:", err);
       // Fall back to a black/silent stream if there's an error
-      const BlackSilence = (...args: Array<{width?: number, height?: number}>) => new MediaStream([silence(), black(...args[0])]);
+      const BlackSilence = () => new MediaStream([silence(), black()]);
       window.localStream = BlackSilence();
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = window.localStream;
@@ -794,7 +1016,8 @@ export default function VideoMeetingPage() {
       setLocalStreamReady(true);
       connectToSocketServer();
     }
-  }, [videoAvailable, audioAvailable, connectToSocketServer, streamReadyRef, localVideoRef, setLocalStreamReady, silence, black]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoAvailable, audioAvailable]);
 
   const connect = () => {
     if (username !== "") {
@@ -804,7 +1027,9 @@ export default function VideoMeetingPage() {
   };
 
   const handleVideo = () => {
-    // Toggle state for UI
+    // Toggle Redux state for UI
+    dispatch(toggleCam());
+    // Toggle local state for immediate UI feedback
     setVideo(!video);
     
     // Apply changes directly to stream tracks
@@ -819,7 +1044,9 @@ export default function VideoMeetingPage() {
   };
 
   const handleAudio = () => {
-    // Toggle state for UI
+    // Toggle Redux state for UI
+    dispatch(toggleMic());
+    // Toggle local state for immediate UI feedback
     setAudio(!audio);
     
     // Apply changes directly to stream tracks
@@ -846,11 +1073,11 @@ export default function VideoMeetingPage() {
       markAsScreenShare(localVideoRef.current, true);
     }
 
-    // Update screen sharing state
-    setIsScreenSharing(true);
+    // Update Redux screen sharing state
+    dispatch(setScreenSharing(true));
 
     for(const peerId in connectionsRef.current){
-      if(peerId === socketRef.current.id){
+      if(peerId === socketRef.current?.id){
         continue;
       }
       
@@ -870,7 +1097,7 @@ export default function VideoMeetingPage() {
         // Create and send an offer
         connectionsRef.current[peerId].createOffer().then(description => {
           connectionsRef.current[peerId].setLocalDescription(description).then(() => {
-            socketRef.current.emit("signal", peerId, JSON.stringify({sdp: connectionsRef.current[peerId].localDescription}));
+            socketRef.current?.emit("signal", peerId, JSON.stringify({sdp: connectionsRef.current[peerId].localDescription}));
           }).catch(err => console.error("Error: ", err));
         }).catch(err => console.error("Error: ", err));
       } catch (e) {
@@ -880,7 +1107,7 @@ export default function VideoMeetingPage() {
     
     stream.getTracks().forEach(track => track.onended = () => {
       setScreen(false);
-      setIsScreenSharing(false); // Update screen sharing state when ended
+      dispatch(setScreenSharing(false)); // Update Redux state when screen sharing ends
       
       if (localVideoRef.current) {
         // Unmark as screen sharing
@@ -895,7 +1122,7 @@ export default function VideoMeetingPage() {
       }catch(err){
         console.error("Error: ", err);
       }
-      let BlackSilence = (...args: Array<{width?: number, height?: number}>) => new MediaStream([silence(), black(...args[0])]);
+      const BlackSilence = () => new MediaStream([silence(), black()]);
       window.localStream = BlackSilence();
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = window.localStream;
@@ -927,7 +1154,7 @@ export default function VideoMeetingPage() {
           const stream = localVideoRef.current.srcObject as MediaStream;
           const screenTracks = stream.getVideoTracks();
           screenTracks.forEach(track => track.stop());
-          setIsScreenSharing(false);
+          dispatch(setScreenSharing(false));
           setScreen(false);
           getUserMedia(); // Go back to camera
         }
@@ -950,7 +1177,7 @@ export default function VideoMeetingPage() {
             const stream = localVideoRef.current.srcObject as MediaStream;
             const screenTracks = stream.getVideoTracks();
             screenTracks.forEach(track => track.stop());
-            setIsScreenSharing(false);
+            dispatch(setScreenSharing(false));
             getUserMedia(); // Go back to camera
           }
         } catch(err) {
@@ -1070,7 +1297,7 @@ export default function VideoMeetingPage() {
       
       // Stop screen sharing if active
       if (isScreenSharing) {
-        setIsScreenSharing(false);
+        dispatch(setScreenSharing(false));
         setScreen(false);
       }
       
@@ -1078,7 +1305,8 @@ export default function VideoMeetingPage() {
       if (window.localStream) {
         console.log("Stopping local stream tracks...");
         stopMediaStream(window.localStream);
-        window.localStream = null as unknown; // Clear reference
+        // @ts-expect-error - Intentionally setting to null for cleanup
+        window.localStream = null;
       }
       
       // Stop tracks from video element source
@@ -1093,7 +1321,7 @@ export default function VideoMeetingPage() {
       
       // Close all peer connections properly
       console.log("Closing all peer connections...");
-      Object.entries(connections).forEach(([id, connection]) => {
+      Object.entries(connectionsRef.current).forEach(([id, connection]) => {
         if (connection) {
           // Remove all event listeners
           connection.onicecandidate = null;
@@ -1103,7 +1331,7 @@ export default function VideoMeetingPage() {
           
           // Close the connection
           connection.close();
-          delete connections[id]; // Remove reference
+          delete connectionsRef.current[id]; // Remove reference
         }
       });
       
@@ -1119,8 +1347,13 @@ export default function VideoMeetingPage() {
       setVideo(false);
       setAudio(false);
       setScreen(false);
-      setIsScreenSharing(false);
-      setVideos([]); // Clear videos array
+      dispatch(setScreenSharing(false));
+      dispatch(clearParticipants()); // Clear Redux participants
+      dispatch(resetMeeting()); // Reset Redux meeting state
+      
+      // Clear remote streams ref and participant IDs
+      remoteStreamsRef.current.clear();
+      setRemoteParticipantIds([]);
       
       console.log("All media resources cleaned up successfully");
     } catch (err) {
@@ -1141,7 +1374,7 @@ export default function VideoMeetingPage() {
     return () => {
       console.log("Component unmounting, cleaning up resources...");
       // Clean up peer connections
-      Object.values(connections).forEach((connection) => {
+      Object.values(connectionsRef.current).forEach((connection) => {
         if (connection) {
           connection.onicecandidate = null;
           // onaddstream is deprecated
@@ -1153,7 +1386,8 @@ export default function VideoMeetingPage() {
       // Clean up media streams
       if (window.localStream) {
         stopMediaStream(window.localStream);
-        window.localStream = null as unknown;
+        // @ts-expect-error - Intentionally setting to null for cleanup
+        window.localStream = null;
       }
       
       // Clean up socket
@@ -1162,7 +1396,8 @@ export default function VideoMeetingPage() {
         socketRef.current.disconnect();
       }
     };
-  }, [connections, getPermissions]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Check for logged-in user and set username if available
   useEffect(() => {
@@ -1358,24 +1593,23 @@ export default function VideoMeetingPage() {
                 className="remote-video-container"
                 ref={remoteVideoContainerRef}
               >
-                {videos.length === 0 ? (
+                {remoteParticipantIds.length === 0 ? (
                   <div className="no-remote-videos">
                     <p>No other participants</p>
                   </div>
                 ) : (
-                  videos.map((video) => (
-                    <video
-                      key={video.socketId}
-                      data-socket-id={video.socketId}
-                      ref={(ref) => {
-                        if (ref && video.stream && ref.srcObject !== video.stream) {
-                          ref.srcObject = video.stream;
-                        }}}
-                      autoPlay
-                      playsInline
-                      className={`remote-video ${video.isScreenShare ? 'screen-share' : ''}`}
-                    ></video>
-                  ))
+                  remoteParticipantIds.map((participantId) => {
+                    // Get stream from ref (not from state)
+                    const stream = remoteStreamsRef.current.get(participantId);
+                    return (
+                      <VideoTile 
+                        key={participantId} 
+                        participantId={participantId}
+                        stream={stream || null}
+                        streamUpdateCounter={streamUpdateCounter}
+                      />
+                    );
+                  })
                 )}
               </div>
             </div>
@@ -1421,7 +1655,7 @@ export default function VideoMeetingPage() {
             </div>
             
             {/* Add mobile chat toggle button */}
-            {window.innerWidth <= 768 && (
+            {isMobileView && (
               <div 
                 className="chat-toggle-button" 
                 onClick={toggleChatVisibility}
@@ -1461,8 +1695,8 @@ export default function VideoMeetingPage() {
               />
               
               {/* Only show chat button on larger screens */}
-              {window.innerWidth > 768 && (
-                <IconButton className='icon-button' onClick={() => participentModal ? closeParticipantModal() : setParticipentModal(true)}>
+              {!isMobileView && (
+                <IconButton className='icon-button' onClick={toggleChatVisibility}>
                   <ChatIcon fontSize="medium" />
                   {newMessages > 0 && (
                     <span className="new-message-indicator">{newMessages}</span>
@@ -1492,7 +1726,7 @@ export default function VideoMeetingPage() {
             <div className="people-in-meeting">
               <div className="people-header">
                 <p>Contributor</p>
-                <p>{videos.length + 1}</p> {/* +1 to include local user */}
+                <p>{participantIds.length + 1}</p> {/* +1 to include local user */}
                 <i className="fa-solid fa-angle-up"></i>
                 <i className="fa-solid fa-angle-down"></i>
               </div>
@@ -1508,18 +1742,21 @@ export default function VideoMeetingPage() {
                   </div>
                 </div>
                 
-                {/* Map remote participants */}
-                {videos.map((video, index) => (
-                  <div key={video.socketId} className="people py-3 flex items-center text-white">
-                    <div className="people-avatar">
-                      <h2>P</h2>
+                {/* Map remote participants from Redux */}
+                {participantIds.map((participantId, index) => {
+                  const participant = participantsById[participantId];
+                  return (
+                    <div key={participantId} className="people py-3 flex items-center text-white">
+                      <div className="people-avatar">
+                        <h2>{participant?.name?.[0]?.toUpperCase() || 'P'}</h2>
+                      </div>
+                      <p className='text-white font-medium ml-4 mr-16'>{participant?.name || `Participant ${index + 1}`}</p>
+                      <div className="three-dots flex items-center justify-center">
+                        <i className="fa-solid fa-ellipsis-vertical"></i>
+                      </div>
                     </div>
-                    <p className='text-white font-medium ml-4 mr-16'>Participant {index + 1}</p>
-                    <div className="three-dots flex items-center justify-center">
-                      <i className="fa-solid fa-ellipsis-vertical"></i>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </div>

@@ -1,5 +1,5 @@
 import { useState, useContext } from "react";
-import { FaGoogle, FaFacebook } from "react-icons/fa";
+import { User, Mail, Lock } from "lucide-react";
 import axios from "axios";
 import { useNavigate } from "react-router-dom"; 
 import { UserContext } from "../contexts/userContext";
@@ -20,6 +20,7 @@ export default function RegisterPage() {
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    setError(""); // Clear previous errors
     try{
       if(!name || !email || !password){
         setError("Please fill in all fields.");
@@ -27,6 +28,10 @@ export default function RegisterPage() {
       }
       if (!validateEmail(email)) {
         setError("Invalid email format.");
+        return;
+      }
+      if (password.length < 6) {
+        setError("Password must be at least 6 characters.");
         return;
       }
       const newUser = {
@@ -39,6 +44,15 @@ export default function RegisterPage() {
         console.log("User registered successfully");
         if(response.data.token){
           localStorage.setItem("token", response.data.token);
+          
+          // Store user data for offline access
+          const userData = {
+            id: response.data.data?._id || response.data.data?.id,
+            name: response.data.data?.name || name,
+            email: response.data.data?.email || email,
+            token: response.data.token
+          };
+          localStorage.setItem("userData", JSON.stringify(userData));
         }
         setUser(response.data);
         if(rememberMe){
@@ -46,84 +60,94 @@ export default function RegisterPage() {
         }else{
             localStorage.removeItem("rememberMe");
         }
+        // Clear fields only on success
+        setName("");
+        setEmail("");
+        setPassword("");
         navigate('/home');
       }
-    }catch(err){
-      console.log(err);
+    }catch(err: any){
+      console.error("Registration error:", err);
+      // Display the error message from the API response
+      if (err.response?.data?.message) {
+        setError(err.response.data.message);
+      } else if (err.response?.data?.errors?.[0]?.msg) {
+        setError(err.response.data.errors[0].msg);
+      } else {
+        setError("An error occurred during registration. Please try again.");
+      }
+      // Don't clear fields on error so user can fix and retry
     }
-    setName("");
-    setEmail("");
-    setPassword("");
   };
 
-return (
-    <div className="flex items-center justify-center min-h-screen bg-[url('/background.png')] bg-cover text-white">
-      <div className="w-full max-w-md p-8  rounded-lg shadow-cyan-500 shadow-lg bg-transparent border-2 border-white">
-        <h2 className="text-2xl font-bold text-center mb-6">Register</h2>
-        {error && <p className="text-red-500 text-sm text-center">{error}</p>}
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
+  return (
+    <div className="flex items-center justify-center min-h-screen bg-black text-white">
+      <div className="w-full max-w-md p-8 rounded-3xl bg-black border border-gray-500">
+        <h2 className="text-3xl font-bold text-center mb-5">Register</h2>
+        {error && <p className="text-red-500 text-sm text-center mb-4">{error}</p>}
+        <form onSubmit={handleSubmit} className="space-y-6">
+          <div className="relative">
             <label className="block text-sm font-medium">Name</label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="w-full p-2 mt-1 rounded bg-gray-700 border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
+            <div className="relative">
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="w-full py-2 pr-10 bg-black border-b-2 border-white focus:outline-none focus:border-white text-white placeholder-gray-500"
+                placeholder=""
+              />
+              <User className="absolute right-2 top-1/2 transform -translate-y-1/2 text-white" size={20} />
+            </div>
           </div>
-          <div>
+          <div className="relative">
             <label className="block text-sm font-medium">Email</label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full p-2 mt-1 rounded bg-gray-700 border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
+            <div className="relative">
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full py-2 pr-10 bg-black border-b-2 border-white focus:outline-none focus:border-white text-white placeholder-gray-500"
+                placeholder=""
+              />
+              <Mail className="absolute right-2 top-1/2 transform -translate-y-1/2 text-white" size={20} />
+            </div>
           </div>
-          <div>
+          <div className="relative">
             <label className="block text-sm font-medium">Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full p-2 mt-1 rounded bg-gray-700 border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
+            <div className="relative">
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full py-2 pr-10 bg-black border-b-2 border-white focus:outline-none focus:border-white text-white placeholder-gray-500"
+                placeholder=""
+              />
+              <Lock className="absolute right-2 top-1/2 transform -translate-y-1/2 text-white" size={20} />
+            </div>
           </div>
-          <div className="flex items-center justify-between">
-            <label className="flex items-center space-x-2">
+          <div className="flex items-center justify-between text-sm">
+            <label className="flex items-center space-x-2 cursor-pointer">
               <input
                 type="checkbox"
                 checked={rememberMe}
                 onChange={() => setRememberMe(!rememberMe)}
-                className="rounded text-blue-500 focus:ring-blue-500"
+                className="w-4 h-4 rounded bg-black border-white cursor-pointer"
               />
-              <span className="text-sm">Remember Me</span>
+              <span>Remember me</span>
             </label>
-            <a href="#" className="text-sm text-blue-400 hover:underline">Forgot Password?</a>
+            <a href="#" className="hover:underline">Forgot Password?</a>
           </div>
           <button
             type="submit"
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 rounded transition"
+            className="w-full bg-white hover:bg-gray-200 text-black font-bold py-3 rounded-full transition"
           >
             Register
           </button>
         </form>
-        <div className="flex items-center my-4">
-          <hr className="flex-grow border-gray-600" />
-          <span className="px-2 text-gray-400">OR</span>
-          <hr className="flex-grow border-gray-600" />
-        </div>
-        <div className="flex space-x-4">
-          <button className="w-full flex items-center justify-center bg-red-500 hover:bg-red-600 text-white py-2 rounded transition">
-            <FaGoogle className="mr-2" /> Google
-          </button>
-          <button className="w-full flex items-center justify-center bg-blue-700 hover:bg-blue-800 text-white py-2 rounded transition">
-            <FaFacebook className="mr-2" /> Facebook
-          </button>
-        </div>
-        <p className="text-sm mt-4 text-center">
+        
+        <p className="text-sm mt-6 text-center">
           Already have an account?{" "}
-          <a href="/login" className="text-blue-400 hover:underline">Login</a>
+          <a href="/login" className="hover:underline font-semibold">Login</a>
         </p>
       </div>
     </div>

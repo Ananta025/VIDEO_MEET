@@ -1,5 +1,3 @@
-import React from 'react'
-import axios from 'axios'
 import { useContext, useState, useEffect } from 'react'
 import { UserContext } from '../contexts/userContext'
 import { useNavigate } from 'react-router-dom';
@@ -11,7 +9,8 @@ import {
     CarouselNext,
     CarouselPrevious,
   } from "@/components/ui/carousel"
-import { useMeeting } from '@/contexts/meetingContext';
+import { useAppDispatch } from '@/app/hooks';
+import { createMeeting, addMeetingToHistory } from '@/features/meeting/meetingSlice';
 import Navbar from '@/components/Navbar';
   
 
@@ -19,7 +18,7 @@ export default function HomePage() {
     const navigate = useNavigate();
     const {user} = useContext(UserContext);
     const [meetingCode, setMeetingCode] = useState('')
-    const meeting = useMeeting();
+    const dispatch = useAppDispatch();
     
     // Check authentication on component mount
     useEffect(() => {
@@ -32,28 +31,20 @@ export default function HomePage() {
     // Create a new meeting
     const handleNewMeeting = async () => {
         try {
-            // Show loading state if needed
+            // Create meeting via Redux - this sets meetingId and isHost in store
+            dispatch(createMeeting());
             
-            const meetingId = await meeting.createMeeting();
+            // Generate meeting ID (same logic as in the slice)
+            const meetingId = `meeting-${Math.random().toString(36).substring(2, 9)}`;
             
-            if (!meetingId) {
-                console.error("Failed to create meeting - no meeting ID returned");
-                return;
-            }
-            
-            try {
-                // Add meeting to history but don't block navigation if it fails
-                await meeting.addMeetingToHistory({
-                    title: `Meeting ${new Date().toLocaleString()}`,
-                    startTime: new Date().toISOString(),
-                    endTime: new Date(Date.now() + 3600000).toISOString(), // 1 hour default
-                    meetingLink: `${window.location.origin}/meeting/${meetingId}`,
-                    status: 'ongoing'
-                });
-            } catch (historyError) {
-                console.log("Failed to add meeting to history, but continuing:", historyError);
-                // Continue with navigation even if history update fails
-            }
+            // Add meeting to history (fire and forget - doesn't block navigation)
+            dispatch(addMeetingToHistory({
+                title: `Meeting ${new Date().toLocaleString()}`,
+                startTime: new Date().toISOString(),
+                endTime: new Date(Date.now() + 3600000).toISOString(), // 1 hour default
+                meetingLink: `${window.location.origin}/meeting/${meetingId}`,
+                status: 'ongoing'
+            }));
             
             // Navigate to meeting room with the correct path
             navigate(`/meeting/${meetingId}`);

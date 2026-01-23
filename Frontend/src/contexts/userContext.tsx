@@ -1,28 +1,11 @@
-import React, { createContext, useState, ReactNode, useEffect } from 'react';
-
-// Define types for user and context
-type User = {
-  id?: string;
-  name?: string;
-  email?: string;
-    token?: string;
-  // Add other user properties as needed
-} | null;
-
-type UserContextType = {
-  user: User;
-  setUser: React.Dispatch<React.SetStateAction<User>>;
-};
+import React, { createContext, useState, useEffect } from 'react';
+import { User, UserContextType, UserProviderProps } from '@/types';
 
 // Create the context with default values
 export const UserContext = createContext<UserContextType>({
   user: null,
   setUser: () => {},
 });
-
-type UserProviderProps = {
-  children: ReactNode;
-};
 
 export const UserProvider = ({ children }: UserProviderProps) => {
   const [user, setUser] = useState<User>(() => {

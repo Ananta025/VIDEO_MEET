@@ -1,13 +1,16 @@
 import AppRoutes from './routes/AppRoutes'
 import { UserProvider } from './contexts/userContext'
-import { MeetingProvider } from './contexts/meetingContext'
+import ErrorBoundary from './components/ErrorBoundary'
+import { ReduxProvider } from './app/providers'
 
 export default function App() {
   return (
-    <UserProvider>
-      <MeetingProvider>
-        <AppRoutes />
-      </MeetingProvider>
-    </UserProvider>
+    <ErrorBoundary>
+      <ReduxProvider>
+        <UserProvider>
+          <AppRoutes />
+        </UserProvider>
+      </ReduxProvider>
+    </ErrorBoundary>
   )
 }

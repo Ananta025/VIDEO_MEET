@@ -18,12 +18,7 @@ import DownloadIcon from '@mui/icons-material/Download';
 import SubtitlesIcon from '@mui/icons-material/Subtitles';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import axios from 'axios';
-
-interface RecordingControlsProps {
-  meetingId: string;
-  isHost: boolean;
-  onRecordingStateChange?: (isRecording: boolean) => void;
-}
+import { RecordingControlsProps, RecordingNotification } from '@/types';
 
 const RecordingControls = ({ meetingId, isHost, onRecordingStateChange }: RecordingControlsProps) => {
   const [isRecording, setIsRecording] = useState(false);
@@ -33,11 +28,7 @@ const RecordingControls = ({ meetingId, isHost, onRecordingStateChange }: Record
   const [hasRecording, setHasRecording] = useState(false);
   const [isGeneratingTranscript, setIsGeneratingTranscript] = useState(false);
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
-  const [notification, setNotification] = useState<{
-    open: boolean;
-    message: string;
-    severity: 'success' | 'error' | 'info';
-  }>({ open: false, message: '', severity: 'info' });
+  const [notification, setNotification] = useState<RecordingNotification>({ open: false, message: '', severity: 'info' });
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
@@ -462,30 +453,28 @@ const RecordingControls = ({ meetingId, isHost, onRecordingStateChange }: Record
                 </MenuItem>
               )}
               
-              {hasTranscript && (
-                <>
-                  <MenuItem onClick={() => { viewTranscript(); handleMenuClose(); }}>
-                    <ListItemIcon>
-                      <DescriptionIcon fontSize="small" />
-                    </ListItemIcon>
-                    <ListItemText>View Transcript</ListItemText>
-                  </MenuItem>
-                  
-                  <MenuItem onClick={() => { handleDownloadTranscript('txt'); handleMenuClose(); }}>
-                    <ListItemIcon>
-                      <DownloadIcon fontSize="small" />
-                    </ListItemIcon>
-                    <ListItemText>Download Transcript (TXT)</ListItemText>
-                  </MenuItem>
-                  
-                  <MenuItem onClick={() => { handleDownloadTranscript('vtt'); handleMenuClose(); }}>
-                    <ListItemIcon>
-                      <SubtitlesIcon fontSize="small" />
-                    </ListItemIcon>
-                    <ListItemText>Download Subtitles (VTT)</ListItemText>
-                  </MenuItem>
-                </>
-              )}
+              {hasTranscript && [
+                <MenuItem key="view" onClick={() => { viewTranscript(); handleMenuClose(); }}>
+                  <ListItemIcon>
+                    <DescriptionIcon fontSize="small" />
+                  </ListItemIcon>
+                  <ListItemText>View Transcript</ListItemText>
+                </MenuItem>,
+                
+                <MenuItem key="txt" onClick={() => { handleDownloadTranscript('txt'); handleMenuClose(); }}>
+                  <ListItemIcon>
+                    <DownloadIcon fontSize="small" />
+                  </ListItemIcon>
+                  <ListItemText>Download Transcript (TXT)</ListItemText>
+                </MenuItem>,
+                
+                <MenuItem key="vtt" onClick={() => { handleDownloadTranscript('vtt'); handleMenuClose(); }}>
+                  <ListItemIcon>
+                    <SubtitlesIcon fontSize="small" />
+                  </ListItemIcon>
+                  <ListItemText>Download Subtitles (VTT)</ListItemText>
+                </MenuItem>
+              ]}
             </Menu>
           </>
         )}

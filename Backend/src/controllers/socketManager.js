@@ -6,9 +6,14 @@ const messages = {};
 const pendingJoins = {}; // Track pending join operations
 
 const connectToSocket = (server) => {
+    // Get allowed origins from environment or use defaults
+    const allowedOrigins = process.env.ALLOWED_ORIGINS 
+        ? process.env.ALLOWED_ORIGINS.split(',') 
+        : ['http://localhost:5173', 'http://localhost:3000'];
+    
     const io = new Server(server, {
         cors: {
-            origin: "*",
+            origin: process.env.NODE_ENV === 'production' ? allowedOrigins : "*",
             methods: ["GET", "POST"],
             allowedHeaders: "*",
             credentials: true
@@ -46,8 +51,12 @@ const connectToSocket = (server) => {
                 // This ensures they can see everyone right away
                 socket.emit("user-joined", socket.id, connections[path]);
                 
-                // Add a small delay before notifying everyone else
-                // This gives the new client time to set up their stream
+                // ============================================
+                // TIMING FIX: Reduced delay from 1000ms to 500ms
+                // The frontend now properly awaits getUserMedia() before
+                // connecting to socket, so we need less buffer time.
+                // 500ms should be sufficient for stream setup.
+                // ============================================
                 setTimeout(() => {
                     // Check if socket is still connected
                     if (io.sockets.sockets.has(socket.id)) {
@@ -61,7 +70,7 @@ const connectToSocket = (server) => {
                         // Clear pending join
                         delete pendingJoins[socket.id];
                     }
-                }, 1000);
+                }, 500);
             }
         });
 
