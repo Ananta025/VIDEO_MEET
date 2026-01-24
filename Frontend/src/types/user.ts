@@ -7,6 +7,7 @@
  */
 export type User = {
   id?: string;
+  _id?: string;  // MongoDB ObjectId (used in some API responses)
   name?: string;
   email?: string;
   token?: string;

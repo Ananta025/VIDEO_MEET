@@ -91,7 +91,9 @@ export default function Navbar() {
             {/* Navigation Bar */}
             <div className="nav-bar sticky top-0 z-20 px-4 sm:px-6 md:px-8 lg:px-12 py-3 sm:py-4 flex justify-between items-center bg-background/95 backdrop-blur-sm border-b">
                 <div className="nav-bar-left-content">
-                    <h2 className='cursor-pointer text-xl font-medium text-blue-600 dark:text-blue-400'>VideoMeet</h2>
+                    <h2
+                    onClick={() => navigate('/home')}
+                    className='cursor-pointer text-xl font-medium text-blue-600 dark:text-blue-400'>VideoMeet</h2>
                 </div>
                 
                 {/* Desktop Navigation */}

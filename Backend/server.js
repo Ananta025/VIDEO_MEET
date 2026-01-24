@@ -72,6 +72,15 @@ app.get('/', (req, res) => {
     res.send("Server is running");
 });
 
+// Health check endpoint for Docker/Kubernetes
+app.get('/health', (req, res) => {
+    res.status(200).json({ 
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+    });
+});
+
 // Function to find an available port
 const startServer = (initialPort) => {
     port = initialPort;
