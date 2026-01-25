@@ -27,14 +27,18 @@
 .local-video-container{
     position: absolute;
     width: 15vw;
+    min-width: 180px;
+    max-width: 250px;
     height: auto;
-    right: 3rem;
-    bottom: 3rem;
+    right: 1.5rem;
+    bottom: 1.5rem;
     border-radius: 0.75rem;
-    z-index: 1;
+    z-index: 100;
     overflow: hidden;
     transition: all 0.3s ease;
-    box-shadow: 0 3px 6px rgba(0, 0, 0, 0.2);
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.4);
+    /* Ensure it stays in corner regardless of container layout */
+    flex-shrink: 0;
 }
 
 .local-video-container video{
@@ -87,13 +91,22 @@
 
 .no-remote-videos {
     display: flex;
+    flex-direction: column;
     justify-content: center;
     align-items: center;
     width: 100%;
     height: 100%;
-    color: #fff;
-    font-size: 1.5rem;
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 1.25rem;
     text-align: center;
+    gap: 1rem;
+}
+
+.no-remote-videos p {
+    margin: 0;
+    padding: 1rem 2rem;
+    background-color: rgba(0, 0, 0, 0.2);
+    border-radius: 0.5rem;
 }
 
 /*Main video container*/

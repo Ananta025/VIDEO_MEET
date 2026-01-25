@@ -234,6 +234,11 @@ export const markAsScreenShare = (
  * @param localVideoContainer - The container element for the local video
  * @param remoteVideoCount - Number of remote videos in the call
  * @param isScreenSharing - Boolean indicating if someone is screen sharing
+ * 
+ * DESIGN DECISION: Self video ALWAYS stays as a small floating tile in the
+ * bottom-right corner, regardless of participant count. This provides a
+ * consistent user experience and prevents jarring layout shifts when
+ * participants join/leave.
  */
 export const updateLocalVideoPosition = (
   localVideoContainer: HTMLDivElement | null,
@@ -246,58 +251,43 @@ export const updateLocalVideoPosition = (
   const isMobile = window.innerWidth < 480;
   const isTablet = window.innerWidth >= 480 && window.innerWidth < 768;
   
-  if (remoteVideoCount === 0) {
-    // If no remote videos, make local video large and centered
-    localVideoContainer.style.width = isMobile ? '85%' : '70%';
-    localVideoContainer.style.height = 'auto';
-    localVideoContainer.style.position = 'static';
-    localVideoContainer.style.margin = '0 auto';
-    localVideoContainer.style.aspectRatio = '16/9';
-    localVideoContainer.style.transition = ''; // Reset transition
-    localVideoContainer.style.boxShadow = ''; // Reset shadow
-    localVideoContainer.style.zIndex = ''; // Reset z-index
-    localVideoContainer.style.right = ''; // Reset positioning
-    localVideoContainer.style.bottom = '';
-  } else if (isScreenSharing) {
-    // During screen sharing, make local video a small picture-in-picture
-    if (isMobile) {
-      localVideoContainer.style.width = '40vw';
-      localVideoContainer.style.right = '0.5rem';
-      localVideoContainer.style.bottom = '0.5rem';
-    } else if (isTablet) {
-      localVideoContainer.style.width = '25vw';
-      localVideoContainer.style.right = '1rem';
-      localVideoContainer.style.bottom = '1rem';
-    } else {
-      localVideoContainer.style.width = '15vw';
-      localVideoContainer.style.right = '3rem';
-      localVideoContainer.style.bottom = '3rem';
-    }
-    localVideoContainer.style.height = 'auto';
-    localVideoContainer.style.position = 'absolute';
-    localVideoContainer.style.zIndex = '100';
-    localVideoContainer.style.boxShadow = '0 2px 10px rgba(0,0,0,0.4)';
-    localVideoContainer.style.transition = 'all 0.3s ease';
+  // ============================================
+  // CRITICAL FIX: Always keep local video as floating PiP
+  // Self video should NEVER move to center or become the main video.
+  // This ensures consistent positioning when participants join/leave.
+  // ============================================
+  
+  // Set responsive size based on device
+  if (isMobile) {
+    localVideoContainer.style.width = '30vw';
+    localVideoContainer.style.minWidth = '100px';
+    localVideoContainer.style.right = '0.5rem';
+    localVideoContainer.style.bottom = '0.5rem';
+  } else if (isTablet) {
+    localVideoContainer.style.width = '20vw';
+    localVideoContainer.style.minWidth = '120px';
+    localVideoContainer.style.right = '1rem';
+    localVideoContainer.style.bottom = '1rem';
   } else {
-    // Default position for local video based on screen size
-    if (isMobile) {
-      localVideoContainer.style.width = '40vw';
-      localVideoContainer.style.right = '0.5rem';
-      localVideoContainer.style.bottom = '0.5rem';
-    } else if (isTablet) {
-      localVideoContainer.style.width = '25vw';
-      localVideoContainer.style.right = '1rem';
-      localVideoContainer.style.bottom = '1rem';
-    } else {
-      localVideoContainer.style.width = '15vw';
-      localVideoContainer.style.right = '3rem';
-      localVideoContainer.style.bottom = '3rem';
-    }
-    localVideoContainer.style.height = 'auto';
-    localVideoContainer.style.position = 'absolute';
-    localVideoContainer.style.zIndex = '100';
-    localVideoContainer.style.boxShadow = '0 2px 10px rgba(0,0,0,0.4)';
-    localVideoContainer.style.transition = 'all 0.3s ease';
-    localVideoContainer.style.margin = ''; // Reset margin from centered state
+    localVideoContainer.style.width = '15vw';
+    localVideoContainer.style.minWidth = '180px';
+    localVideoContainer.style.maxWidth = '250px';
+    localVideoContainer.style.right = '1.5rem';
+    localVideoContainer.style.bottom = '1.5rem';
+  }
+  
+  // Always position as floating overlay
+  localVideoContainer.style.height = 'auto';
+  localVideoContainer.style.position = 'absolute';
+  localVideoContainer.style.zIndex = '100';
+  localVideoContainer.style.boxShadow = '0 3px 10px rgba(0,0,0,0.4)';
+  localVideoContainer.style.transition = 'all 0.3s ease';
+  localVideoContainer.style.margin = ''; // Reset any margin
+  localVideoContainer.style.aspectRatio = ''; // Let video determine aspect ratio
+  
+  // Slightly smaller during screen sharing to give more space to shared content
+  if (isScreenSharing && !isMobile) {
+    localVideoContainer.style.width = '12vw';
+    localVideoContainer.style.maxWidth = '200px';
   }
 };
