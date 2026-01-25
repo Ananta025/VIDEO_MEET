@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Get source code
+      # 1️⃣ Checkout code
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -22,7 +22,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      # 3️⃣ Login Docker to AWS ECR
+      # 3️⃣ Login to Amazon ECR
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
@@ -30,16 +30,23 @@ jobs:
       - name: Build and Push Backend
         run: |
           docker build -t video-meet-backend ./Backend
+
           docker tag video-meet-backend:latest \
             ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/video-meet-backend:latest
+
           docker push \
             ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/video-meet-backend:latest
 
-      # 5️⃣ Build & Push Frontend Image
+      # 5️⃣ Build & Push Frontend Image (Vite ENV at BUILD TIME)
       - name: Build and Push Frontend
         run: |
-          docker build -t video-meet-frontend ./Frontend
+          docker build \
+            --build-arg VITE_BASE_URL=http://video-meet-backend:3000 \
+            --build-arg VITE_SERVER_URL=http://video-meet-backend:3000 \
+            -t video-meet-frontend ./Frontend
+
           docker tag video-meet-frontend:latest \
             ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/video-meet-frontend:latest
+
           docker push \
             ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/video-meet-frontend:latest
