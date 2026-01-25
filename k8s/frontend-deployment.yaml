@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: video-meet-frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: video-meet-frontend
+  template:
+    metadata:
+      labels:
+        app: video-meet-frontend
+    spec:
+      imagePullSecrets:
+        - name: ecr-secret
+      containers:
+        - name: frontend
+          image: 851725228571.dkr.ecr.ap-south-1.amazonaws.com/video-meet-frontend:latest
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
